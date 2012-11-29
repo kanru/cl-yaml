@@ -1,8 +1,8 @@
-;;;; packages.lisp --- CL-YAML Package definition
+;;;; test.lisp --- CL-YAML Test
 
-;;; Copyright (C) 2012  Kan-Ru Chen
+;;; Copyright (C) 2012  Kan-Ru Chen (陳侃如)
 
-;;; Author(s): Kan-Ru Chen <kanru@kanru.info>
+;;; Author(s): Kan-Ru Chen (陳侃如) <kanru@kanru.info>
 
 ;;; Permission is hereby granted, free of charge, to any person obtaining a
 ;;; copy of this software and associated documentation files (the "Software"),
@@ -30,10 +30,18 @@
 
 (in-package #:cl-user)
 
-(defpackage #:yaml
-  (:use #:cl))
+(defpackage #:yaml-test
+  (:use #:cl #:cl-test-more)
+  (:export #:run))
 
-;;; packages.lisp ends here
+(in-package #:yaml-test)
+
+(defun run ()
+  (plan 1)
+  (run-test 'reader)
+  (finalize))
+
+;;; test.lisp ends here
 
 ;;; Local Variables:
 ;;; mode: lisp
