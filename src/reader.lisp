@@ -26,7 +26,6 @@
 
 ;;; TODO:
 ;;;  - Count line & columns
-;;;  - Recycle buffer for stream-reader impl
 
 ;;;; Code:
 
@@ -60,11 +59,13 @@
   ((buffer :initform (make-array 0 :element-type 'character
                                    :adjustable t
                                    :fill-pointer t)
-           :accessor buffer)))
+           :accessor buffer)
+   (cache-pointer :initform 0
+                  :accessor cache-pointer)))
 
 (defgeneric peek (reader &optional n)
   (:documentation
-   "Return the Nth character from current tip or nil when out of bounds."))
+   "Return the Nth character from current tip or #\Nul when out of bounds."))
 (defgeneric prefix (reader &optional length)
   (:documentation
    "Return a string containing the first LENGTH characters from current tip.
@@ -86,57 +87,83 @@ SOURCE is either a stream or a string."
      (make-instance 'stream-reader :source source))))
 
 (defmethod peek ((reader string-reader) &optional (n 0))
+  (assert (>= n 0))
   (let ((offset (+ n (pointer reader))))
-    (when (and (not (minusp n))
-               (< offset (length (source reader))))
-      (char (source reader) offset))))
+    (if (< offset (length (source reader)))
+        (char (source reader) offset)
+        #\Nul)))
 
 (defmethod prefix ((reader string-reader) &optional (length 1))
-  (when (plusp length)
-    (let ((offset (+ length (pointer reader))))
-      (if (< offset (length (source reader)))
-          (subseq (source reader) (pointer reader) offset)
-          (subseq (source reader) (pointer reader))))))
+  (assert (>= length 0))
+  (let ((offset (+ length (pointer reader))))
+    (if (< offset (length (source reader)))
+        (subseq (source reader) (pointer reader) offset)
+        (subseq (source reader) (pointer reader)))))
 
 (defmethod forward ((reader string-reader) &optional (length 1))
-  (when (plusp length)
-    (let ((offset (+ length (pointer reader))))
-      (if (< offset (length (source reader)))
-          (setf (pointer reader) offset)
-          (setf (pointer reader) (length (source reader))))
-      (values))))
+  (assert (>= length 0))
+  (let ((offset (+ length (pointer reader))))
+    (if (< offset (length (source reader)))
+        (setf (pointer reader) offset)
+        (setf (pointer reader) (length (source reader))))
+    (values)))
 
+(defun ensure-buffer-length (buffer length)
+  (let ((size (array-total-size buffer)))
+    (when (< size length)
+      (adjust-array buffer length :initial-element #\Nul
+                                  :fill-pointer t))))
+
+(defun consume-stream (stream length)
+  (dotimes (n length)
+    (read-char stream nil)))
+
+;;; Part of the stream is in the buffer if we have peeked it. First we
+;;; check it if we need more data. If so we make sure the buffer is
+;;; large enough then read the stream into it. Then return the target
+;;; character.
 (defmethod peek ((reader stream-reader) &optional (n 0))
-  (let ((offset (+ n (pointer reader))))
-    (when (not (minusp n))
-      (ensure-buffer-length reader (1+ offset))
-      (when (< offset (fill-pointer (buffer reader)))
-        (char (buffer reader) offset)))))
+  (assert (>= n 0))
+  (with-accessors ((cache cache-pointer)
+                   (pointer pointer)
+                   (stream source)
+                   (buffer buffer)) reader
+    (let* ((target (+ n pointer))
+           (pass (- target cache)))
+      (when (>= pass 0)
+        (ensure-buffer-length buffer (1+ target))
+        (setf cache
+              (read-sequence buffer stream :start cache :end (1+ target))))
+      (if (< target cache)
+          (char buffer target)
+          #\Nul))))
 
 (defmethod prefix ((reader stream-reader) &optional (length 1))
-  (when (plusp length)
-    (let ((offset (+ length (pointer reader))))
-      (ensure-buffer-length reader offset)
-      (subseq (buffer reader) (pointer reader)
-              (min (length (buffer reader)) offset)))))
+  (assert (>= length 0))
+  (with-accessors ((buffer buffer)
+                   (pointer pointer)
+                   (cache cache-pointer)) reader
+    (peek reader length)
+    (subseq buffer pointer (min cache length))))
 
+;;; Part of the stream is in the buffer if we have peeked it. First we
+;;; check it if forward will pass the `cache-pointer', if so we set
+;;; `cache-pointer' and `pointer' to 0, otherwise we set `pointer' to
+;;; the target offest and finish. If the cache has been flushed, we
+;;; consume remain data from stream.
 (defmethod forward ((reader stream-reader) &optional (length 1))
-  (when (plusp length)
-    (let ((offset (+ length (pointer reader))))
-      (ensure-buffer-length reader offset)
-      (setf (pointer reader) offset)
-      (values))))
-
-(defmethod ensure-buffer-length ((reader stream-reader) &optional length)
-  (assert length)
-  (with-accessors ((buffer buffer) (source source)) reader
-    (let ((orig (fill-pointer buffer)))
-      (when (< (array-total-size buffer) length)
-        (adjust-array buffer length :initial-element #\Nul
-                                    :fill-pointer t)
-        (symbol-macrolet ((fp (fill-pointer buffer)))
-          (setf fp (read-sequence buffer source
-                                  :start orig :end length)))))))
+  (assert (>= length 0))
+  (with-accessors ((cache cache-pointer)
+                   (pointer pointer)
+                   (stream source)) reader
+    (let* ((target (+ pointer length))
+           (pass (- target cache)))
+      (if (>= pass 0)
+          (progn
+            (setf pointer 0)
+            (setf cache 0)
+            (consume-stream stream pass))
+          (setf pointer target)))))
 
 ;;; reader.lisp ends here
 

@@ -31,15 +31,14 @@
 (in-package #:yaml-test)
 
 (deftest reader
-  (plan 24)
+  (plan 22)
 
   (diag "string-reader")
   (let ((reader (yaml::make-reader "abcdefghijklmnopqrstuvwxyz")))
     (is (yaml::peek reader) #\a "Peek first character")
     (is (yaml::peek reader 1) #\b "Peek second character")
     (is (yaml::peek reader 25) #\z "Peek last character")
-    (is (yaml::peek reader -1) nil "Peek invalid index")
-    (is (yaml::peek reader 26) nil "Peek invalid index")
+    (is (yaml::peek reader 26) #\Nul "Peek too much index")
     (is (yaml::prefix reader) "a" "Prefix")
     (is (yaml::prefix reader 2) "ab" "Prefix(2)")
     (is (yaml::prefix reader 26) "abcdefghijklmnopqrstuvwxyz" "Prefix(end)")
@@ -49,7 +48,7 @@
     (yaml::forward reader 2)
     (is (yaml::peek reader) #\d "Forward(2)")
     (yaml::forward reader 27)
-    (is (yaml::peek reader) nil "Forward(end+1)"))
+    (is (yaml::peek reader) #\Nul "Forward(end+1)"))
 
   (diag "stream-reader")
   (with-input-from-string (input "abcdefghijklmnopqrstuvwxyz")
@@ -57,8 +56,7 @@
       (is (yaml::peek reader) #\a "Peek first character")
       (is (yaml::peek reader 1) #\b "Peek second character")
       (is (yaml::peek reader 25) #\z "Peek last character")
-      (is (yaml::peek reader -1) nil "Peek invalid index")
-      (is (yaml::peek reader 26) nil "Peek invalid index")
+      (is (yaml::peek reader 26) #\Nul "Peek too much index")
       (is (yaml::prefix reader) "a" "Prefix")
       (is (yaml::prefix reader 2) "ab" "Prefix(2)")
       (is (yaml::prefix reader 26) "abcdefghijklmnopqrstuvwxyz" "Prefix(end)")
@@ -68,7 +66,7 @@
       (yaml::forward reader 2)
       (is (yaml::peek reader) #\d "Forward(2)")
       (yaml::forward reader 27)
-      (is (yaml::peek reader) nil "Forward(end+1)"))))
+      (is (yaml::peek reader) #\Nul "Forward(end+1)"))))
 
 ;;; test-reader.lisp ends here
 
