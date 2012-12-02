@@ -31,15 +31,17 @@
 (in-package #:cl-user)
 
 (defpackage #:yaml-test
-  (:use #:cl #:cl-test-more)
+  (:use #:cl #:fiveam)
+  (:shadow #:run)
   (:export #:run))
 
 (in-package #:yaml-test)
 
+(def-suite yaml
+  :description "Run all YAML tests.")
+
 (defun run ()
-  (plan 1)
-  (run-test 'reader)
-  (finalize))
+  (fiveam:run! 'yaml))
 
 ;;; test.lisp ends here
 

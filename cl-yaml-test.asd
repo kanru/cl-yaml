@@ -12,4 +12,4 @@
                   :depends-on ("base")
                   :components ((:file "test-reader"))))))
   :depends-on ("cl-yaml"
-               "cl-test-more"))
+               "fiveam"))

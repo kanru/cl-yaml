@@ -30,43 +30,48 @@
 
 (in-package #:yaml-test)
 
-(deftest reader
-  (plan 22)
+(in-suite yaml)
 
-  (diag "string-reader")
+(def-fixture string-fixture ()
   (let ((reader (yaml::make-reader "abcdefghijklmnopqrstuvwxyz")))
-    (is (yaml::peek reader) #\a "Peek first character")
-    (is (yaml::peek reader 1) #\b "Peek second character")
-    (is (yaml::peek reader 25) #\z "Peek last character")
-    (is (yaml::peek reader 26) #\Nul "Peek too much index")
-    (is (yaml::prefix reader) "a" "Prefix")
-    (is (yaml::prefix reader 2) "ab" "Prefix(2)")
-    (is (yaml::prefix reader 26) "abcdefghijklmnopqrstuvwxyz" "Prefix(end)")
-    (is (yaml::prefix reader 27) "abcdefghijklmnopqrstuvwxyz" "Prefix(end+1)")
-    (yaml::forward reader)
-    (is (yaml::peek reader) #\b "Forward")
-    (yaml::forward reader 2)
-    (is (yaml::peek reader) #\d "Forward(2)")
-    (yaml::forward reader 27)
-    (is (yaml::peek reader) #\Nul "Forward(end+1)"))
+    (&body)))
 
-  (diag "stream-reader")
+(def-fixture stream-fixture ()
   (with-input-from-string (input "abcdefghijklmnopqrstuvwxyz")
     (let ((reader (yaml::make-reader input)))
-      (is (yaml::peek reader) #\a "Peek first character")
-      (is (yaml::peek reader 1) #\b "Peek second character")
-      (is (yaml::peek reader 25) #\z "Peek last character")
-      (is (yaml::peek reader 26) #\Nul "Peek too much index")
-      (is (yaml::prefix reader) "a" "Prefix")
-      (is (yaml::prefix reader 2) "ab" "Prefix(2)")
-      (is (yaml::prefix reader 26) "abcdefghijklmnopqrstuvwxyz" "Prefix(end)")
-      (is (yaml::prefix reader 27) "abcdefghijklmnopqrstuvwxyz" "Prefix(end+1)")
-      (yaml::forward reader)
-      (is (yaml::peek reader) #\b "Forward")
-      (yaml::forward reader 2)
-      (is (yaml::peek reader) #\d "Forward(2)")
-      (yaml::forward reader 27)
-      (is (yaml::peek reader) #\Nul "Forward(end+1)"))))
+      (&body))))
+
+(defmacro def-reader-test (test &body body)
+  `(progn
+     ,@(mapcar (lambda (type)
+                 `(test (,(intern (format nil "~A-~A/~A" type 'reader test)
+                                  (find-package :yaml-test))
+                         :fixture ,(intern (format nil "~A-~A" type 'fixture)
+                                           (find-package :yaml-test)))
+                    ,@body))
+               '(string stream))))
+
+(def-reader-test peek
+  (is (char= #\a (yaml::peek reader)))
+  (is (char= #\b (yaml::peek reader 1)))
+  (is (char= #\z (yaml::peek reader 25)))
+  (is (char= #\Nul (yaml::peek reader 26))))
+
+(def-reader-test prefix
+  (is (string= "a" (yaml::prefix reader)))
+  (is (string= "ab" (yaml::prefix reader 2)))
+  (is (string= "abcdefghijklmnopqrstuvwxyz"
+               (yaml::prefix reader 26)))
+  (is (string= "abcdefghijklmnopqrstuvwxyz"
+               (yaml::prefix reader 27))))
+
+(def-reader-test forward
+  (is (char= #\b (progn (yaml::forward reader)
+                        (yaml::peek reader))))
+  (is (char= #\d (progn (yaml::forward reader 2)
+                        (yaml::peek reader))))
+  (is (char= #\Nul (progn (yaml::forward reader 27)
+                          (yaml::peek reader)))))
 
 ;;; test-reader.lisp ends here
 
