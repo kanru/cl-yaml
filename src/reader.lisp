@@ -24,9 +24,6 @@
 
 ;;;; Commentary:
 
-;;; TODO:
-;;;  - Count line & columns
-
 ;;;; Code:
 
 (in-package #:yaml)
@@ -42,7 +39,7 @@
     :initform 0
     :accessor pointer)
    (line
-    :initform 0
+    :initform 1
     :accessor line
     :documentation
     "The line of the current character.")
@@ -63,6 +60,13 @@
    (cache-pointer :initform 0
                   :accessor cache-pointer)))
 
+(defclass mark ()
+  ((line :accessor line
+         :initarg :line)
+   (column :accessor column
+           :initarg :column))
+  (:default-initargs :line 0 :column 0))
+
 (defgeneric peek (reader &optional n)
   (:documentation
    "Return the Nth character from current tip or #\Nul when out of bounds."))
@@ -75,7 +79,9 @@ The returned string might be shorter if we are near the end of the source."))
    "Skip LENGTH characters."))
 (defgeneric mark (reader)
   (:documentation
-   "Return the MARK object that represents the current character in tip."))
+   "Return the MARK object that represents the current character in tip.")
+  (:method (reader)
+    (make-instance 'mark :line (line reader) :column (column reader))))
 
 (defun make-reader (source)
   "Make a buffered reader object from SOURCE.
@@ -85,6 +91,9 @@ SOURCE is either a stream or a string."
      (make-instance 'string-reader :source source))
     (stream
      (make-instance 'stream-reader :source source))))
+
+(defun count-newline (buffer &key start end)
+  (count #\Linefeed buffer :start start :end end))
 
 (defmethod peek ((reader string-reader) &optional (n 0))
   (assert (>= n 0))
@@ -102,10 +111,16 @@ SOURCE is either a stream or a string."
 
 (defmethod forward ((reader string-reader) &optional (length 1))
   (assert (>= length 0))
-  (let ((offset (+ length (pointer reader))))
-    (if (< offset (length (source reader)))
-        (setf (pointer reader) offset)
-        (setf (pointer reader) (length (source reader))))
+  (let* ((offset (+ length (pointer reader)))
+         (target (min offset (length (source reader)))))
+    (incf (line reader)
+          (count-newline (source reader) :start (pointer reader) :end target))
+    (setf (pointer reader) target)
+    (setf (column reader)
+          (loop :for i :downfrom (pointer reader) :to 0 :by 1
+                :until (and (< i (length (source reader)))
+                            (char= #\Linefeed (char (source reader) i)))
+                :count (not (= i (pointer reader)))))
     (values)))
 
 (defun ensure-buffer-length (buffer length)
@@ -115,8 +130,16 @@ SOURCE is either a stream or a string."
                                   :fill-pointer t))))
 
 (defun consume-stream (stream length)
-  (dotimes (n length)
-    (read-char stream nil)))
+  (let ((?line 0)
+        (?column 0))
+    (dotimes (n length)
+      (case (read-char stream nil)
+        (#\Linefeed
+         (incf ?line)
+         (setf ?column 0))
+        (nil)
+        (t (incf ?column))))
+    (values ?line ?column)))
 
 ;;; Part of the stream is in the buffer if we have peeked it. First we
 ;;; check it if we need more data. If so we make sure the buffer is
@@ -155,15 +178,23 @@ SOURCE is either a stream or a string."
   (assert (>= length 0))
   (with-accessors ((cache cache-pointer)
                    (pointer pointer)
-                   (stream source)) reader
+                   (stream source)
+                   (line line)
+                   (column column)
+                   (buffer buffer)) reader
     (let* ((target (+ pointer length))
            (pass (- target cache)))
       (if (>= pass 0)
           (progn
+            (incf line (count-newline buffer :start pointer :end cache))
             (setf pointer 0)
             (setf cache 0)
-            (consume-stream stream pass))
-          (setf pointer target)))))
+            (multiple-value-bind (?line ?column)
+                (consume-stream stream pass)
+              (incf line ?line)
+              (setf column ?column)))
+          (setf pointer target
+                column target)))))
 
 ;;; reader.lisp ends here
 

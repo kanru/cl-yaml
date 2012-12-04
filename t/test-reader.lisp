@@ -32,32 +32,35 @@
 
 (in-suite yaml)
 
-(def-fixture string-fixture ()
-  (let ((reader (yaml::make-reader "abcdefghijklmnopqrstuvwxyz")))
+(defvar *input-string* "abcdefghijklmnopqrstuvwxyz")
+
+(def-fixture string-fixture (&optional input-string)
+  (let ((reader (yaml::make-reader (or input-string *input-string*))))
     (&body)))
 
-(def-fixture stream-fixture ()
-  (with-input-from-string (input "abcdefghijklmnopqrstuvwxyz")
+(def-fixture stream-fixture (&optional input-string)
+  (with-input-from-string (input (or input-string *input-string*))
     (let ((reader (yaml::make-reader input)))
       (&body))))
 
-(defmacro def-reader-test (test &body body)
+(defmacro def-reader-test (test input-string &body body)
   `(progn
      ,@(mapcar (lambda (type)
                  `(test (,(intern (format nil "~A-~A/~A" type 'reader test)
                                   (find-package :yaml-test))
-                         :fixture ,(intern (format nil "~A-~A" type 'fixture)
-                                           (find-package :yaml-test)))
+                         :fixture ,(list (intern (format nil "~A-~A" type 'fixture)
+                                                 (find-package :yaml-test))
+                                         (eval input-string)))
                     ,@body))
                '(string stream))))
 
-(def-reader-test peek
+(def-reader-test peek ()
   (is (char= #\a (yaml::peek reader)))
   (is (char= #\b (yaml::peek reader 1)))
   (is (char= #\z (yaml::peek reader 25)))
   (is (char= #\Nul (yaml::peek reader 26))))
 
-(def-reader-test prefix
+(def-reader-test prefix ()
   (is (string= "a" (yaml::prefix reader)))
   (is (string= "ab" (yaml::prefix reader 2)))
   (is (string= "abcdefghijklmnopqrstuvwxyz"
@@ -65,13 +68,34 @@
   (is (string= "abcdefghijklmnopqrstuvwxyz"
                (yaml::prefix reader 27))))
 
-(def-reader-test forward
+(def-reader-test forward ()
   (is (char= #\b (progn (yaml::forward reader)
                         (yaml::peek reader))))
   (is (char= #\d (progn (yaml::forward reader 2)
                         (yaml::peek reader))))
   (is (char= #\Nul (progn (yaml::forward reader 27)
                           (yaml::peek reader)))))
+
+(def-reader-test mark1 ()
+  (let ((mark (yaml::mark reader)))
+    (is (= 1 (yaml::line mark)))
+    (is (= 0 (yaml::column mark)))))
+
+(def-reader-test mark2 ()
+  (yaml::forward reader 1)
+  (let ((mark (yaml::mark reader)))
+    (is (= 1 (yaml::line mark)))
+    (is (= 1 (yaml::column mark)))))
+
+(def-reader-test mark3 (format nil "a~%ab~%abc")
+  (yaml::forward reader 2)
+  (let ((mark (yaml::mark reader)))
+    (is (= 2 (yaml::line mark)))
+    (is (= 0 (yaml::column mark))))
+  (yaml::forward reader 3)
+  (let ((mark (yaml::mark reader)))
+    (is (= 3 (yaml::line mark)))
+    (is (= 0 (yaml::column mark)))))
 
 ;;; test-reader.lisp ends here
 
