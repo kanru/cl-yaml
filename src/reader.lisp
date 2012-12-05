@@ -95,6 +95,12 @@ SOURCE is either a stream or a string."
 (defun count-newline (buffer &key start end)
   (count #\Linefeed buffer :start start :end end))
 
+(defun count-column-back (buffer &key start)
+  (loop :for i :downfrom start :to 0 :by 1
+        :until (and (< i (length buffer))
+                    (char= #\Linefeed (char buffer i)))
+        :count (not (= i start))))
+
 (defmethod peek ((reader string-reader) &optional (n 0))
   (assert (>= n 0))
   (let ((offset (+ n (pointer reader))))
@@ -117,10 +123,7 @@ SOURCE is either a stream or a string."
           (count-newline (source reader) :start (pointer reader) :end target))
     (setf (pointer reader) target)
     (setf (column reader)
-          (loop :for i :downfrom (pointer reader) :to 0 :by 1
-                :until (and (< i (length (source reader)))
-                            (char= #\Linefeed (char (source reader) i)))
-                :count (not (= i (pointer reader)))))
+          (count-column-back (source reader) :start (pointer reader)))
     (values)))
 
 (defun ensure-buffer-length (buffer length)
@@ -193,8 +196,10 @@ SOURCE is either a stream or a string."
                 (consume-stream stream pass)
               (incf line ?line)
               (setf column ?column)))
-          (setf pointer target
-                column target)))))
+          (progn
+            (incf line (count-newline buffer :start pointer :end target))
+            (setf pointer target)
+            (setf column (count-column-back buffer :start target)))))))
 
 ;;; reader.lisp ends here
 

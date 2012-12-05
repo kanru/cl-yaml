@@ -97,6 +97,17 @@
     (is (= 3 (yaml::line mark)))
     (is (= 0 (yaml::column mark)))))
 
+(def-reader-test mark4 (format nil "a~%ab~%abc")
+  (is (char= #\c (yaml::peek reader 7)))
+  (yaml::forward reader 2)
+  (let ((mark (yaml::mark reader)))
+    (is (= 2 (yaml::line mark)))
+    (is (= 0 (yaml::column mark))))
+  (yaml::forward reader 3)
+  (let ((mark (yaml::mark reader)))
+    (is (= 3 (yaml::line mark)))
+    (is (= 0 (yaml::column mark)))))
+
 ;;; test-reader.lisp ends here
 
 ;;; Local Variables:
