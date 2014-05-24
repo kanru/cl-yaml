@@ -45,15 +45,24 @@
    (%stream-start-produced-p :type boolean
                              :initform nil
                              :accessor stream-start-produced-p)
+   (%stream-end-produced-p :type boolean
+                             :initform nil
+                             :accessor stream-end-produced-p)
    (%flow-level-p :type boolean
                   :initform nil
                   :accessor flow-level-p)
    (%simple-keys :type (list simple-key)
                  :initform ()
                  :accessor simple-keys)
+   (%token-available-p :type boolean
+                       :initform nil
+                       :accessor token-available-p)
    (%tokens :type (list token)
             :initform ()
             :accessor tokens)
+   (%tokens-parsed :type fixnum
+                   :initform 0
+                   :accessor tokens-parsed)
    (%mark   :type mark
             :initform (make-mark)
             :accessor position-mark)))
@@ -231,13 +240,15 @@ level, append the BLOCK-END token."
   (unless (flow-level-p scanner)
     ;; Loop through the indentation levels in the stack 
     (loop :while (> (indent scanner) column)
+          :for indents-poped :from 0
           ;; Create a token and append it to the queue
           :do (push (make-token 'block-end
                                 (position-mark scanner)
                                 (position-mark scanner))
                     (tokens scanner))
               ;; Pop the indentation level
-              (setf (indent scanner) (pop (indents scanner))))))
+              (setf (indent scanner) (pop (indents scanner)))
+          :finally (return indents-poped))))
 
 (defun remove-simple-key (scanner)
   "Remove a potential simple key at the current flow level."
@@ -251,7 +262,209 @@ level, append the BLOCK-END token."
              :problem "could not find expected ':'"
              :problem-mark (position-mark scanner)))
     ;; Remove the key from the stack.
-    (setf (simple-key-possible-p simple-key) nil)))
+    (setf (simple-key-possible-p simple-key) nil))
+  t)
+
+(defun scan (scanner)
+  "Get the next token.
+Return multiple values TOKEN STREAM-END-P"
+  (cond
+    ;; No tokens after STREAM-END or error
+    ((stream-end-produced-p scanner)
+     (values nil t))
+    (t
+     ;; Ensure that the tokens queue contains enough tokens
+     (unless (token-available-p scanner)
+       (fetch-more-tokens scanner))
+     ;; Fetch the next token from the queue
+     (let ((token (first (last (tokens scanner)))))
+       ;; Dequeue
+       (setf (tokens scanner) (nbutlast (tokens scanner))
+             (token-available-p scanner) nil)
+       (incf (tokens-parsed scanner))
+       (values token (stream-end-produced-p scanner))))))
+
+(defun stale-simple-keys (scanner)
+  "Check the list of potential simple keys and remove the positions
+that cannot contain simple keys anymore."
+  ;; Check for a potential simple key for each flow level
+  (loop :for simple-key :in (simple-keys scanner)
+        :for position-mark := (position-mark scanner)
+        :and simple-key-mark := (simple-key-mark simple-key)
+        ;; The specification requires that a simple key
+        ;;
+        ;;  - is limited to a single line,
+        ;;  - is shorter than 1024 characters.
+        :when (and (simple-key-possible-p simple-key)
+                   (or (< (mark-line simple-key-mark)
+                          (mark-line position-mark))
+                       (< (+ (mark-index simple-key-mark) 1024)
+                          (mark-index position-mark))))
+          :do (if (simple-key-required-p simple-key)
+                  (error 'scanner-error
+                         :context "while scanning a simple key"
+                         :context-mark simple-key-mark
+                         :problem "could not find expected ':'"
+                         :problem-mark position-mark)
+                  (setf (simple-key-possible-p simple-key) nil))
+        :finally (return t)))
+
+(defun maybe-want-simple-key-p (scanner)
+  (loop :for simple-key :in (simple-keys scanner)
+        :thereis (and (simple-key-possible-p simple-key)
+                      (= (simple-key-token-number simple-key)
+                         (tokens-parsed scanner)))))
+
+(defun fetch-more-tokens (scanner)
+  "Ensure that the tokens queue contains at least one token which can
+be returned to the parser."
+  ;; While we need more tokens to fetch, do it
+  (loop :while (or (null (tokens scanner))
+                   (and (stale-simple-keys scanner)
+                        (maybe-want-simple-key-p scanner)))
+        :do (fetch-next-token scanner)
+        :finally (return (setf (token-available-p scanner) t))))
+
+(defun fetch-next-token (scanner)
+  "The dispatcher for token fetchers."
+  (block nil
+    ;; Ensure that the buffer is initialized
+    #+todo
+    (ensure-buffer-length scanner 1)
+    ;; Check if we just started scanning. Fetch STREAM-START then
+    (when (not (stream-start-produced-p scanner))
+      (return (fetch-stream-start scanner)))
+    ;; Eat whitespaces and comments until we reach the next token
+    #+todo
+    (scan-to-next-token scanner)
+    ;; Remove obsolete potential simple keys
+    (stale-simple-keys scanner)
+    ;; Check the indentation level against the current column
+    (unroll-indent scanner (current-column scanner))
+    ;; Ensure that the buffer contains at least 4 characters. 4 is the
+    ;; length of the longest indicators ('--- ' and '... ').
+    #+todo
+    (ensure-buffer-length scanner 4)
+    ;; Is it the end of the stream?
+    #+todo
+    (when (buffer-end-p scanner)
+      (fetch-stream-end scanner))
+    (return (fetch-stream-end scanner))
+    ;; Is it a directive?
+    #+todo
+    (when (and (zerop (current-column scanner))
+               (looking-at scanner "%"))
+      (return (fetch-directive scanner)))
+    ;; Is it the document start indicator?
+    #+todo
+    (when (and (zerop (current-column scanner))
+               (looking-at scanner "---")
+               (blank-or-null-p scanner 3))
+      (return (fetch-document-indicator scanner 'document-start)))
+    ;; Is it the document end indicator?
+    #+todo
+    (when (and (zerop (current-column scanner))
+               (looking-at scanner "...")
+               (blank-or-null-p scanner 3))
+      (return (fetch-document-indicator scanner 'document-end)))
+    ;; Is it the flow sequence start indicator?
+    #+todo
+    (when (looking-at scanner "[")
+      (return (fetch-flow-collection-start scanner 'flow-sequence-start)))
+    ;; Is it the flow mapping start indicator?
+    #+todo
+    (when (looking-at scanner "{")
+      (return (fetch-flow-collection-start scanner 'flow-mapping-start)))
+    ;; Is it the flow sequence end indicator?
+    #+todo
+    (when (looking-at scanner "]")
+      (return (fetch-flow-collection-end scanner 'flow-sequence-end)))
+    ;; Is it the flow mapping end indicator?
+    #+todo
+    (when (looking-at scanner "}")
+      (return (fetch-flow-collection-end scanner 'flow-mapping-end)))
+    ;; Is it the flow entry indicator?
+    #+todo
+    (when (looking-at scanner ",")
+      (return (fetch-flow-entry scanner)))
+    ;; Is it the block entry indicator?
+    #+todo
+    (when (and (looking-at scanner "-")
+               (blank-or-null-p scanner 1))
+      (return (fetch-block-entry scanner)))
+    ;; Is it the key indicator?
+    #+todo
+    (when (and (looking-at scanner "?")
+               (blank-or-null-p scanner 1))
+      (return (fetch-key scanner)))
+    ;; Is it the value indicator?
+    #+todo
+    (when (and (looking-at scanner ":")
+               (blank-or-null-p scanner 1))
+      (return (fetch-value scanner)))
+    ;; Is it an alias?
+    #+todo
+    (when (looking-at scanner "*")
+      (return (fetch-anchor scanner 'alias)))
+    ;; Is it an anchor?
+    #+todo
+    (when (looking-at scanner "&")
+      (return (fetch-anchor scanner 'anchor)))
+    ;; Is it a tag?
+    #+todo
+    (when (looking-at scanner "!")
+      (return (fetch-tag scanner)))
+    ;; Is it a literal scalar?
+    #+todo
+    (when (and (looking-at scanner "|")
+               (not (flow-level-p scanner)))
+      (return (fetch-block-scalar scanner :literal)))
+    ;; Is it a folded scalar
+    #+todo
+    (when (and (looking-at scanner ">")
+               (not (flow-level-p scanner)))
+      (return (fetch-block-scalar scanner :folded)))
+    ;; Is it a single-quoted scalar?
+    #+todo
+    (when (looking-at scanner "'")
+      (return (fetch-flow-scalar scanner :single-quoted)))
+    ;; Is it a double-quoted scalar?
+    #+todo
+    (when (looking-at scanner "\"")
+      (return (fetch-flow-scalar scanner :double-quoted)))
+    ;; Is it a plain scalar?
+    ;;
+    ;; A plain scalar may start with any non-blank characters except
+    ;;
+    ;;     '-', '?', ':', ',', '[', ']', '{', '}',
+    ;;     '#', '&', '*', '!', '|', '>', '\'', '"',
+    ;;     '%', '@', '`'.
+    ;; In the block context (and, for the '-' indicator, in the flow context
+    ;; too), it may also start with the characters
+    ;;
+    ;;     '-', '?', ':'
+    ;; if it is followed by a non-space character.
+    ;;
+    ;; XXX The last rule is more restrictive than the specification requires.
+    #+todo
+    (when (or (not (or (blank-or-null-p scanner)
+                       (some (lambda (str)
+                               (looking-at scanner str))
+                             '("-" "?" ":" "," "[" "]" "{" "}" "#" "&" "*"
+                               "!" "|" ">" "'" "\"" "%" "@" "`"))))
+              (and (looking-at scanner "-")
+                   (not (blank-p scanner 1)))
+              (and (not (flow-level-p scanner))
+                   (or (looking-at scanner "?")
+                       (looking-at scanner ":"))
+                   (not (blank-or-null-p scanner 1))))
+      (return (fetch-plain-scalar scanner)))
+    ;; If we don't determine the token type so far, it is an error
+    (error 'scanner-error
+           :context "while scanning for the next token"
+           :context-mark (position-mark scanner)
+           :problem "found character that cannot start any token"
+           :problem-mark (position-mark scanner))))
 
 (defun fetch-stream-start (scanner)
   "Initialize the scanner and produce the STREAM-START token."
@@ -264,11 +477,11 @@ level, append the BLOCK-END token."
   ;; Initialize the simple key stack
   (push (make-simple-key) (simple-keys scanner))
   ;; Create the STREAM-START token and append it to the queue.
-  (push (make-stream-start :any
-                           (position-mark scanner)
-                           (position-mark scanner))
-        (tokens scanner))
-  (values))
+  (let ((token (make-stream-start :any
+                                  (position-mark scanner)
+                                  (position-mark scanner))))
+    (push token (tokens scanner))
+    token))
 
 (defun fetch-stream-end (scanner)
   "Produce the STREAM-END token and shut down the scanner."
@@ -280,12 +493,13 @@ level, append the BLOCK-END token."
   (unroll-indent scanner -1)
   ;; Reset simple keys
   (remove-simple-key scanner)
-  (setf (simple-key-allowed-p scanner) nil)
+  (setf (simple-key-allowed-p scanner) nil
+        (stream-end-produced-p scanner) t)
   ;; Create the STREAM-END token and append it to the queue
-  (push (make-stream-end (position-mark scanner)
-                         (position-mark scanner))
-        (tokens scanner))
-  (values))
+  (let ((token (make-stream-end (position-mark scanner)
+                                (position-mark scanner))))
+    (push token (tokens scanner))
+    token))
 
 ;;; scanner.lisp ends here
 
