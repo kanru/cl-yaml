@@ -207,10 +207,10 @@
 
 (defun remove-simple-key (scanner)
   (let ((simple-key (first (simple-keys scanner))))
-    (when (simple-key-possible-p simple-key)
-      (when (simple-key-required-p simple-key)
-        (error "~a While scanning a simple key, could not find expected ':'"
-               (position-mark scanner))))
+    (when (and (simple-key-possible-p simple-key)
+               (simple-key-required-p simple-key))
+      (error "~a While scanning a simple key, could not find expected ':'"
+             (position-mark scanner)))
     (setf (simple-key-possible-p simple-key) nil)))
 
 (defun fetch-stream-start (scanner)
