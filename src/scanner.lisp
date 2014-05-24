@@ -58,6 +58,33 @@
             :initform (make-mark)
             :accessor position-mark)))
 
+(define-condition scanner-error (error)
+  ((%context :type string
+             :initarg :context
+             :reader error-context)
+   (%context-mark :type mark
+                  :initarg :context-mark
+                  :reader error-context-mark)
+   (%problem :type string
+             :initarg :problem
+             :reader error-problem)
+   (%problem-mark :type mark
+                  :initarg :problem-mark
+                  :reader error-problem-mark))
+  (:report (lambda (error stream)
+             (with-accessors ((problem-mark error-problem-mark)
+                              (problem error-problem)
+                              (context-mark error-context-mark)
+                              (context error-context)) error
+               (format stream "Line ~A Column ~A: Error, ~A~%"
+                       (mark-line context-mark)
+                       (mark-column context-mark)
+                       context)
+               (format stream "Line ~A Column ~A: ~A"
+                       (mark-line problem-mark)
+                       (mark-column problem-mark)
+                       problem)))))
+
 (defun current-column (scanner)
   (mark-column (position-mark scanner)))
 
@@ -218,8 +245,11 @@ level, append the BLOCK-END token."
     ;; If the key is required, it is an error.
     (when (and (simple-key-possible-p simple-key)
                (simple-key-required-p simple-key))
-      (error "~a While scanning a simple key, could not find expected ':'"
-             (position-mark scanner)))
+      (error 'scanner-error
+             :context "while scanning a simple key"
+             :context-mark (simple-key-mark simple-key)
+             :problem "could not find expected ':'"
+             :problem-mark (position-mark scanner)))
     ;; Remove the key from the stack.
     (setf (simple-key-possible-p simple-key) nil)))
 
