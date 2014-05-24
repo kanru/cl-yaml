@@ -197,27 +197,43 @@
            :reader scalar-style)))
 
 (defun unroll-indent (scanner column)
+  "Pop indentation levels from the indents stack until the current
+level becomes less or equal to the column.  For each indentation
+level, append the BLOCK-END token."
+  ;; Do nothing in the flow context
   (unless (flow-level-p scanner)
+    ;; Loop through the indentation levels in the stack 
     (loop :while (> (indent scanner) column)
+          ;; Create a token and append it to the queue
           :do (push (make-token 'block-end
                                 (position-mark scanner)
                                 (position-mark scanner))
                     (tokens scanner))
+              ;; Pop the indentation level
               (setf (indent scanner) (pop (indents scanner))))))
 
 (defun remove-simple-key (scanner)
+  "Remove a potential simple key at the current flow level."
   (let ((simple-key (first (simple-keys scanner))))
+    ;; If the key is required, it is an error.
     (when (and (simple-key-possible-p simple-key)
                (simple-key-required-p simple-key))
       (error "~a While scanning a simple key, could not find expected ':'"
              (position-mark scanner)))
+    ;; Remove the key from the stack.
     (setf (simple-key-possible-p simple-key) nil)))
 
 (defun fetch-stream-start (scanner)
+  "Initialize the scanner and produce the STREAM-START token."
+  ;; Set the initial indentation
   (setf (indent scanner) -1
+        ;; A simple-key is allowed at the beginning of the stream.
         (simple-key-allowed-p scanner) t
+        ;; We have started
         (stream-start-produced-p scanner) t)
+  ;; Initialize the simple key stack
   (push (make-simple-key) (simple-keys scanner))
+  ;; Create the STREAM-START token and append it to the queue.
   (push (make-stream-start :any
                            (position-mark scanner)
                            (position-mark scanner))
@@ -225,12 +241,17 @@
   (values))
 
 (defun fetch-stream-end (scanner)
+  "Produce the STREAM-END token and shut down the scanner."
+  ;; Force new line
   (when (not (zerop (current-column scanner)))
     (setf (current-column scanner) 0)
     (incf (current-line scanner)))
+  ;; Reset the indentation level
   (unroll-indent scanner -1)
+  ;; Reset simple keys
   (remove-simple-key scanner)
   (setf (simple-key-allowed-p scanner) nil)
+  ;; Create the STREAM-END token and append it to the queue
   (push (make-stream-end (position-mark scanner)
                          (position-mark scanner))
         (tokens scanner))
