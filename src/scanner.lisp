@@ -46,8 +46,8 @@
                              :initform nil
                              :accessor stream-start-produced-p)
    (%stream-end-produced-p :type boolean
-                             :initform nil
-                             :accessor stream-end-produced-p)
+                           :initform nil
+                           :accessor stream-end-produced-p)
    (%flow-level-p :type boolean
                   :initform nil
                   :accessor flow-level-p)
