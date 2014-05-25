@@ -308,7 +308,6 @@ be returned to the parser."
     (when (not (stream-start-produced-p scanner))
       (return (fetch-stream-start scanner)))
     ;; Eat whitespaces and comments until we reach the next token
-    #+todo
     (scan-to-next-token scanner)
     ;; Remove obsolete potential simple keys
     (stale-simple-keys scanner)
@@ -328,12 +327,12 @@ be returned to the parser."
     ;; Is it the document start indicator?
     (when (and (zerop (current-column scanner))
                (looking-at scanner "---")
-               (blank-or-nul-p scanner 3))
+               (blank-or-break-or-nul-p scanner 3))
       (return (fetch-document-indicator scanner 'document-start)))
     ;; Is it the document end indicator?
     (when (and (zerop (current-column scanner))
                (looking-at scanner "...")
-               (blank-or-nul-p scanner 3))
+               (blank-or-break-or-nul-p scanner 3))
       (return (fetch-document-indicator scanner 'document-end)))
     ;; Is it the flow sequence start indicator?
     #+todo
@@ -433,6 +432,37 @@ be returned to the parser."
            :context-mark (copy-mark scanner)
            :problem "found character that cannot start any token"
            :problem-mark (copy-mark scanner))))
+
+(defun scan-to-next-token (scanner)
+  (loop :do (ensure-buffer-length scanner 1)
+        ;; Allow the BOM mark to start a line
+        ;; :when (and (zerop (current-column scanner))
+        ;;            (bomp (scanner)))
+        ;;   :do (skip scanner)
+        ;; Eat whitespaces
+        ;;
+        ;; Tabs are allowed:
+        ;;
+        ;; - in the flow context;
+        ;; - in the block context, but not at the beginning of the line or
+        ;; after '-', '?', or ':' (complex value)
+        :do (ensure-buffer-length scanner 1)
+            (loop :while (or (spacep scanner)
+                             (and (or (flow-level-p scanner)
+                                      (simple-key-allowed-p scanner))
+                                  (tabp scanner)))
+                  :do (skip scanner)
+                      (ensure-buffer-length scanner 1))
+        ;; Eat a comment until a line break
+        :when (check scanner #\#)
+          :do (loop :until (break-or-nul-p scanner)
+                    :do (skip scanner)
+                        (ensure-buffer-length scanner 1))
+        :while (breakp scanner)
+        :do (ensure-buffer-length scanner 2)
+            (skip-line scanner)
+        :unless (flow-level-p scanner)
+          :do (setf (simple-key-allowed-p scanner) t)))
 
 (defun fetch-stream-start (scanner)
   "Initialize the scanner and produce the STREAM-START token."

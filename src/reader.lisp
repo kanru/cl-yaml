@@ -41,10 +41,15 @@
            #:peek
            #:current-column
            #:check
+           #:spacep
+           #:tabp
            #:nulp
-           #:blank-or-nul-p
+           #:blank-or-break-or-nul-p
+           #:breakp
+           #:break-or-nul-p
            #:looking-at
-           #:skip))
+           #:skip
+           #:skip-line))
 (in-package #:yaml-reader)
 
 (defclass mark ()
@@ -135,15 +140,45 @@
   (or (spacep reader n)
       (tabp reader n)))
 
-(defun blank-or-nul-p (reader &optional (n 0))
+(defun blank-or-break-or-nul-p (reader &optional (n 0))
   (declare (inline))
   (or (blankp reader n)
+      (breakp reader n)
+      (nulp reader n)))
+
+(defun crlfp (reader &optional (n 0))
+  (declare (inline))
+  (and (check reader #\Return n)
+       (check reader #\Newline (1+ n))))
+
+(defun breakp (reader &optional (n 0))
+  (declare (inline))
+  (or (check reader #\Return n)
+      (check reader #\Newline n)
+      (check reader #\Next-Line n)
+      #+sbcl (check reader #\LINE_SEPARATOR)
+      #+sbcl (check reader #\PARAGRAPH_SEPARATOR)))
+
+(defun break-or-nul-p (reader &optional (n 0))
+  (declare (inline))
+  (or (breakp reader n)
       (nulp reader n)))
 
 (defun skip (reader &optional (n 1))
   (declare (inline))
   (dotimes (i n)
     (yread reader)))
+
+(defun skip-line (reader)
+  (cond
+    ((crlfp reader)
+     (skip reader 2)
+     (setf (mark-column (mark reader)) 0)
+     (incf (mark-line (mark reader))))
+    ((breakp reader)
+     (skip reader)
+     (setf (mark-column (mark reader)) 0)
+     (incf (mark-line (mark reader))))))
 
 (defclass string-reader (reader) ())
 
