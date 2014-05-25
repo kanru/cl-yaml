@@ -28,9 +28,9 @@
 
 ;;;; Code:
 
-(defpackage :yaml-scanner
-  (:use :cl))
-(in-package :yaml-scanner)
+(defpackage #:yaml-scanner
+  (:use #:cl #:yaml-reader))
+(in-package #:yaml-scanner)
 
 (defclass scanner ()
   ((%indent :type fixnum
@@ -63,9 +63,9 @@
    (%tokens-parsed :type fixnum
                    :initform 0
                    :accessor tokens-parsed)
-   (%mark   :type mark
-            :initform (make-mark)
-            :accessor position-mark)))
+   (%reader :type reader
+            :initarg :reader
+            :accessor reader)))
 
 (define-condition scanner-error (error)
   ((%context :type string
@@ -94,41 +94,22 @@
                        (mark-column problem-mark)
                        problem)))))
 
+(defun make-scanner (source)
+  (make-instance 'scanner :reader (make-reader source)))
+
+(defun %mark (scanner)
+  (point (reader scanner)))
+
 (defun current-column (scanner)
-  (mark-column (position-mark scanner)))
+  (mark-column (%mark scanner)))
 
-(defsetf current-column (scanner) (column)
-  `(setf (mark-column (position-mark ,scanner)) ,column))
+(defun %ensure-buffer-length (scanner n)
+  (declare (inline))
+  (ensure-buffer-length (reader scanner) n))
 
-(defun current-line (scanner)
-  (mark-line (position-mark scanner)))
-
-(defsetf current-line (scanner) (line)
-  `(setf (mark-line (position-mark ,scanner)) ,line))
-
-(defun make-scanner ()
-  (make-instance 'scanner))
-
-(defclass mark ()
-  ((%index  :type fixnum
-            :initform 0
-            :accessor mark-index)
-   (%line   :type fixnum
-            :initform 0
-            :accessor mark-line)
-   (%column :type fixnum
-            :initform 0
-            :accessor mark-column)))
-
-(defmethod print-object ((mark mark) stream)
-  (print-unreadable-object (mark stream :type t)
-    (format stream "index: ~a line: ~a column: ~a"
-            (mark-index mark)
-            (mark-line mark)
-            (mark-column mark))))
-
-(defun make-mark ()
-  (make-instance 'mark))
+(defun %nulp (scanner &optional (n 0))
+  (declare (inline))
+  (char= (peek (reader scanner) n) #\Nul))
 
 (defclass simple-key ()
   ((%possible :type boolean
@@ -169,7 +150,7 @@
 (defclass no (token) ())
 
 (deftype encoding ()
-  '(member :any :utf-8 :utf-16-le :utf-16-be))
+  '(member :any :utf-8 :utf-16le :utf-16be))
 
 (defclass stream-start (token)
   ((%encoding :type encoding
@@ -178,7 +159,7 @@
               :reader stream-start-encoding)))
 
 (defun make-stream-start (encoding start-mark end-mark)
-  (make-instance 'stream-start :encoding encoding
+  (make-instance 'stream-start :encoding (or encoding :any)
                                :start start-mark
                                :end end-mark))
 
@@ -242,9 +223,7 @@ level, append the BLOCK-END token."
     (loop :while (> (indent scanner) column)
           :for indents-poped :from 0
           ;; Create a token and append it to the queue
-          :do (push (make-token 'block-end
-                                (position-mark scanner)
-                                (position-mark scanner))
+          :do (push (make-token 'block-end (%mark scanner) (%mark scanner))
                     (tokens scanner))
               ;; Pop the indentation level
               (setf (indent scanner) (pop (indents scanner)))
@@ -260,7 +239,7 @@ level, append the BLOCK-END token."
              :context "while scanning a simple key"
              :context-mark (simple-key-mark simple-key)
              :problem "could not find expected ':'"
-             :problem-mark (position-mark scanner)))
+             :problem-mark (%mark scanner)))
     ;; Remove the key from the stack.
     (setf (simple-key-possible-p simple-key) nil))
   t)
@@ -289,7 +268,7 @@ Return multiple values TOKEN STREAM-END-P"
 that cannot contain simple keys anymore."
   ;; Check for a potential simple key for each flow level
   (loop :for simple-key :in (simple-keys scanner)
-        :for position-mark := (position-mark scanner)
+        :for position-mark := (%mark scanner)
         :and simple-key-mark := (simple-key-mark simple-key)
         ;; The specification requires that a simple key
         ;;
@@ -329,8 +308,7 @@ be returned to the parser."
   "The dispatcher for token fetchers."
   (block nil
     ;; Ensure that the buffer is initialized
-    #+todo
-    (ensure-buffer-length scanner 1)
+    (%ensure-buffer-length scanner 1)
     ;; Check if we just started scanning. Fetch STREAM-START then
     (when (not (stream-start-produced-p scanner))
       (return (fetch-stream-start scanner)))
@@ -343,13 +321,10 @@ be returned to the parser."
     (unroll-indent scanner (current-column scanner))
     ;; Ensure that the buffer contains at least 4 characters. 4 is the
     ;; length of the longest indicators ('--- ' and '... ').
-    #+todo
-    (ensure-buffer-length scanner 4)
+    (%ensure-buffer-length scanner 4)
     ;; Is it the end of the stream?
-    #+todo
-    (when (buffer-end-p scanner)
-      (fetch-stream-end scanner))
-    (return (fetch-stream-end scanner))
+    (when (%nulp scanner)
+      (return (fetch-stream-end scanner)))
     ;; Is it a directive?
     #+todo
     (when (and (zerop (current-column scanner))
@@ -462,9 +437,9 @@ be returned to the parser."
     ;; If we don't determine the token type so far, it is an error
     (error 'scanner-error
            :context "while scanning for the next token"
-           :context-mark (position-mark scanner)
+           :context-mark (%mark scanner)
            :problem "found character that cannot start any token"
-           :problem-mark (position-mark scanner))))
+           :problem-mark (%mark scanner))))
 
 (defun fetch-stream-start (scanner)
   "Initialize the scanner and produce the STREAM-START token."
@@ -477,9 +452,9 @@ be returned to the parser."
   ;; Initialize the simple key stack
   (push (make-simple-key) (simple-keys scanner))
   ;; Create the STREAM-START token and append it to the queue.
-  (let ((token (make-stream-start :any
-                                  (position-mark scanner)
-                                  (position-mark scanner))))
+  (let ((token (make-stream-start (determine-encoding (reader scanner))
+                                  (%mark scanner)
+                                  (%mark scanner))))
     (push token (tokens scanner))
     token))
 
@@ -487,8 +462,10 @@ be returned to the parser."
   "Produce the STREAM-END token and shut down the scanner."
   ;; Force new line
   (when (not (zerop (current-column scanner)))
-    (setf (current-column scanner) 0)
-    (incf (current-line scanner)))
+    #+todo (%force-new-line scanner)
+    ;; (setf (current-column scanner) 0)
+    ;; (incf (current-line scanner))
+    )
   ;; Reset the indentation level
   (unroll-indent scanner -1)
   ;; Reset simple keys
@@ -496,8 +473,7 @@ be returned to the parser."
   (setf (simple-key-allowed-p scanner) nil
         (stream-end-produced-p scanner) t)
   ;; Create the STREAM-END token and append it to the queue
-  (let ((token (make-stream-end (position-mark scanner)
-                                (position-mark scanner))))
+  (let ((token (make-stream-end (%mark scanner) (%mark scanner))))
     (push token (tokens scanner))
     token))
 

@@ -1,6 +1,6 @@
 ;;;; reader.lisp --- YAML source reader
 
-;;; Copyright (C) 2012  Kan-Ru Chen (陳侃如)
+;;; Copyright (C) 2012, 2014  Kan-Ru Chen (陳侃如)
 
 ;;; Author(s): Kan-Ru Chen (陳侃如) <kanru@kanru.info>
 
@@ -26,180 +26,127 @@
 
 ;;;; Code:
 
-(in-package #:yaml)
-
-(defclass reader ()
-  ())
-
-(defclass standard-reader (reader)
-  ((source
-    :initarg :source
-    :reader source)
-   (pointer
-    :initform 0
-    :accessor pointer)
-   (line
-    :initform 1
-    :accessor line
-    :documentation
-    "The line of the current character.")
-   (column
-    :initform 0
-    :accessor column
-    :documentation
-    "The column of the current character.")))
-
-(defclass string-reader (standard-reader)
-  ())
-
-(defclass stream-reader (standard-reader)
-  ((buffer :initform (make-array 0 :element-type 'character
-                                   :adjustable t
-                                   :fill-pointer t)
-           :accessor buffer)
-   (cache-pointer :initform 0
-                  :accessor cache-pointer)))
+(defpackage #:yaml-reader
+  (:use #:cl)
+  (:export #:make-mark
+           #:mark-index
+           #:mark-line
+           #:mark-column
+           #:make-reader
+           #:point
+           #:determine-encoding
+           #:ensure-buffer-length
+           #:peek))
+(in-package #:yaml-reader)
 
 (defclass mark ()
-  ((line :accessor line
-         :initarg :line)
-   (column :accessor column
-           :initarg :column))
-  (:default-initargs :line 1 :column 0))
+  ((%index  :type fixnum
+            :initform 0
+            :accessor mark-index)
+   (%line   :type fixnum
+            :initform 0
+            :accessor mark-line)
+   (%column :type fixnum
+            :initform 0
+            :accessor mark-column)))
 
-(defgeneric peek (reader &optional n)
+(defmethod print-object ((mark mark) stream)
+  (print-unreadable-object (mark stream :type t)
+    (format stream "index: ~a line: ~a column: ~a"
+            (mark-index mark)
+            (mark-line mark)
+            (mark-column mark))))
+
+(defun make-mark ()
+  (make-instance 'mark))
+
+(defclass reader ()
+  ((%source :initarg :source
+            :reader source
+            :documentation
+            "The input source, either a STRING or a STREAM")
+   (%mark :type mark
+          :initform (make-mark)
+          :reader point)))
+
+(defgeneric make-reader (source)
+  (:documentation
+   "Return a YAML reader frome SOURCE."))
+(defgeneric determine-encoding (reader)
+  (:documentation
+   "Return the input stream encoding."))
+(defgeneric ensure-buffer-length (reader n)
+  (:documentation
+   "Ensure the reader buffer has at least N characters."))
+(defgeneric peek (reader n)
   (:documentation
    "Return the Nth character from current tip or #\Nul when out of bounds."))
-(defgeneric prefix (reader &optional length)
-  (:documentation
-   "Return a string containing the first LENGTH characters from current tip.
-The returned string might be shorter if we are near the end of the source."))
-(defgeneric forward (reader &optional length)
-  (:documentation
-   "Skip LENGTH characters."))
-(defgeneric mark (reader)
-  (:documentation
-   "Return the MARK object that represents the current character in tip.")
-  (:method (reader)
-    (make-instance 'mark :line (line reader) :column (column reader))))
 
-(defun make-reader (source)
-  "Make a buffered reader object from SOURCE.
-SOURCE is either a stream or a string."
-  (typecase source
-    (string
-     (make-instance 'string-reader :source source))
-    (stream
-     (make-instance 'stream-reader :source source))))
+(defclass string-reader (reader)
+  ())
 
-(defun count-newline (buffer &key start end)
-  (count #\Linefeed buffer :start start :end end))
+(defmethod make-reader ((source string))
+  (make-instance 'string-reader :source source))
 
-(defun count-column-back (buffer &key start)
-  (loop :for i :downfrom start :to 0 :by 1
-        :until (and (< i (length buffer))
-                    (char= #\Linefeed (char buffer i)))
-        :count (not (= i start))))
+(defmethod determine-encoding ((sr string-reader))
+  nil)
 
-(defmethod peek ((reader string-reader) &optional (n 0))
-  (assert (>= n 0))
-  (let ((offset (+ n (pointer reader))))
-    (if (< offset (length (source reader)))
-        (char (source reader) offset)
-        #\Nul)))
+(defmethod ensure-buffer-length ((sr string-reader) n)
+  t)
 
-(defmethod prefix ((reader string-reader) &optional (length 1))
-  (assert (>= length 0))
-  (let ((offset (+ length (pointer reader))))
-    (if (< offset (length (source reader)))
-        (subseq (source reader) (pointer reader) offset)
-        (subseq (source reader) (pointer reader)))))
+(defmethod peek ((sr string-reader) n)
+  (let ((pos (+ n (mark-index (point sr)))))
+    (if (>= pos (length (source sr)))
+        #\Nul
+        (char (source sr) pos))))
 
-(defmethod forward ((reader string-reader) &optional (length 1))
-  (assert (>= length 0))
-  (let* ((offset (+ length (pointer reader)))
-         (target (min offset (length (source reader)))))
-    (incf (line reader)
-          (count-newline (source reader) :start (pointer reader) :end target))
-    (setf (pointer reader) target)
-    (setf (column reader)
-          (count-column-back (source reader) :start (pointer reader)))
-    (values)))
+(defclass stream-reader (reader)
+  ((%buffer :type (vector character)
+            :initform (make-array 0 :element-type 'character
+                                    :adjustable t
+                                    :fill-pointer t)
+            :accessor buffer
+            :documentation
+            "Caches part of the input stream")
+   (%pointer :type fixnum
+             :initform 0
+             :accessor pointer
+             :documentation
+             "The position of first unread character")
+   (%unread :type fixnum
+            :initform 0
+            :accessor unread
+            :documentation
+            "Number of unread characters in the buffer")
+   (%eofp   :type boolean
+            :initform nil
+            :accessor eofp)))
 
-(defun ensure-buffer-length (buffer length)
-  (let ((size (array-total-size buffer)))
-    (when (< size length)
-      (adjust-array buffer length :initial-element #\Nul
-                                  :fill-pointer t))))
+(defmethod make-reader ((source stream))
+  (make-instance 'stream-reader :source source))
 
-(defun consume-stream (stream length)
-  (let ((?line 0)
-        (?column 0))
-    (dotimes (n length)
-      (case (read-char stream nil)
-        (#\Linefeed
-         (incf ?line)
-         (setf ?column 0))
-        (nil)
-        (t (incf ?column))))
-    (values ?line ?column)))
+(defmethod determine-encoding ((sr stream-reader))
+  (stream-external-format (source sr)))
 
-;;; Part of the stream is in the buffer if we have peeked it. First we
-;;; check it if we need more data. If so we make sure the buffer is
-;;; large enough then read the stream into it. Then return the target
-;;; character.
-(defmethod peek ((reader stream-reader) &optional (n 0))
-  (assert (>= n 0))
-  (with-accessors ((cache cache-pointer)
-                   (pointer pointer)
-                   (stream source)
-                   (buffer buffer)) reader
-    (let* ((target (+ n pointer))
-           (pass (- target cache)))
-      (when (>= pass 0)
-        (ensure-buffer-length buffer (1+ target))
-        (setf cache
-              (read-sequence buffer stream :start cache :end (1+ target))))
-      (if (< target cache)
-          (char buffer target)
-          #\Nul))))
+(defmethod ensure-buffer-length ((sr stream-reader) n)
+  (cond
+    ((or (eofp sr)
+         (>= (unread sr) n))
+     (unread sr))
+    (t
+     ;; Move the unread characters to the beginning of the buffer
+     (replace (buffer sr) (buffer sr) :start2 (pointer sr) :end2 (unread sr))
+     (setf (fill-pointer (buffer sr)) (unread sr))
+     ;; Fill the buffer until it has enough characters
+     (dotimes (i n)
+       (vector-push-extend (read-char (source sr) nil #\Nul) (buffer sr))
+       (incf (unread sr)))
+     (when (null (peek-char nil (source sr) nil))
+       (setf (eofp sr) t)))))
 
-(defmethod prefix ((reader stream-reader) &optional (length 1))
-  (assert (>= length 0))
-  (with-accessors ((buffer buffer)
-                   (pointer pointer)
-                   (cache cache-pointer)) reader
-    (peek reader length)
-    (subseq buffer pointer (min cache length))))
-
-;;; Part of the stream is in the buffer if we have peeked it. First we
-;;; check it if forward will pass the `cache-pointer', if so we set
-;;; `cache-pointer' and `pointer' to 0, otherwise we set `pointer' to
-;;; the target offest and finish. If the cache has been flushed, we
-;;; consume remain data from stream.
-(defmethod forward ((reader stream-reader) &optional (length 1))
-  (assert (>= length 0))
-  (with-accessors ((cache cache-pointer)
-                   (pointer pointer)
-                   (stream source)
-                   (line line)
-                   (column column)
-                   (buffer buffer)) reader
-    (let* ((target (+ pointer length))
-           (pass (- target cache)))
-      (if (>= pass 0)
-          (progn
-            (incf line (count-newline buffer :start pointer :end cache))
-            (setf pointer 0)
-            (setf cache 0)
-            (multiple-value-bind (?line ?column)
-                (consume-stream stream pass)
-              (incf line ?line)
-              (setf column ?column)))
-          (progn
-            (incf line (count-newline buffer :start pointer :end target))
-            (setf pointer target)
-            (setf column (count-column-back buffer :start target)))))))
+(defmethod peek ((sr stream-reader) n)
+  (assert (< n (unread sr)))
+  (char (buffer sr) (+ n (pointer sr))))
 
 ;;; reader.lisp ends here
 
