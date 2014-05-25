@@ -162,7 +162,8 @@
 (defmethod yread ((sr string-reader))
   (prog1
       (char (source sr) (mark-index (mark sr)))
-    (incf (mark-index (mark sr)))))
+    (incf (mark-index (mark sr)))
+    (incf (mark-column (mark sr)))))
 
 (defclass stream-reader (reader)
   ((%buffer :type (vector character)
@@ -213,6 +214,8 @@
   (prog1
       (char (buffer sr) (pointer sr))
     (incf (pointer sr))
+    (incf (mark-index (mark sr)))
+    (incf (mark-column (mark sr)))
     (decf (unread sr))))
 
 ;;; reader.lisp ends here
