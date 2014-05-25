@@ -32,11 +32,19 @@
            #:mark-index
            #:mark-line
            #:mark-column
-           #:make-reader
-           #:point
+           #:string-reader
+           #:stream-reader
+           #:mark
+           #:copy-mark
            #:determine-encoding
            #:ensure-buffer-length
-           #:peek))
+           #:peek
+           #:current-column
+           #:check
+           #:nulp
+           #:blank-or-nul-p
+           #:looking-at
+           #:skip))
 (in-package #:yaml-reader)
 
 (defclass mark ()
@@ -57,8 +65,19 @@
             (mark-line mark)
             (mark-column mark))))
 
-(defun make-mark ()
-  (make-instance 'mark))
+(defun make-mark (&optional mark)
+  (let ((new-mark (make-instance 'mark)))
+    (when mark
+      (with-accessors ((di mark-index)
+                       (dl mark-line)
+                       (dc mark-column)) new-mark
+        (with-accessors ((si mark-index)
+                         (sl mark-line)
+                         (sc mark-column)) mark
+          (setf di si
+                dl sl
+                dc sc))))
+    new-mark))
 
 (defclass reader ()
   ((%source :initarg :source
@@ -67,11 +86,8 @@
             "The input source, either a STRING or a STREAM")
    (%mark :type mark
           :initform (make-mark)
-          :reader point)))
+          :reader mark)))
 
-(defgeneric make-reader (source)
-  (:documentation
-   "Return a YAML reader frome SOURCE."))
 (defgeneric determine-encoding (reader)
   (:documentation
    "Return the input stream encoding."))
@@ -81,12 +97,55 @@
 (defgeneric peek (reader n)
   (:documentation
    "Return the Nth character from current tip or #\Nul when out of bounds."))
+(defgeneric yread (reader)
+  (:documentation
+   "Return and remove one character from unread buffer."))
 
-(defclass string-reader (reader)
-  ())
+(defun copy-mark (reader)
+  (declare (inline))
+  (make-mark (mark reader)))
 
-(defmethod make-reader ((source string))
-  (make-instance 'string-reader :source source))
+(defun current-column (reader)
+  (declare (inline))
+  (mark-column (mark reader)))
+
+(defun check (reader char &optional (n 0))
+  (declare (inline))
+  (char= (peek reader n) char))
+
+(defun looking-at (reader str)
+  (loop :for char :across str
+        :for idx :from 0
+        :always (check reader char idx)))
+
+(defun nulp (reader &optional (n 0))
+  (declare (inline))
+  (check reader #\Nul n))
+
+(defun tabp (reader &optional (n 0))
+  (declare (inline))
+  (check reader #\Tab n))
+
+(defun spacep (reader &optional (n 0))
+  (declare (inline))
+  (check reader #\Space n))
+
+(defun blankp (reader &optional (n 0))
+  (declare (inline))
+  (or (spacep reader n)
+      (tabp reader n)))
+
+(defun blank-or-nul-p (reader &optional (n 0))
+  (declare (inline))
+  (or (blankp reader n)
+      (nulp reader n)))
+
+(defun skip (reader &optional (n 1))
+  (declare (inline))
+  (dotimes (i n)
+    (yread reader)))
+
+(defclass string-reader (reader) ())
 
 (defmethod determine-encoding ((sr string-reader))
   nil)
@@ -95,10 +154,15 @@
   t)
 
 (defmethod peek ((sr string-reader) n)
-  (let ((pos (+ n (mark-index (point sr)))))
+  (let ((pos (+ n (mark-index (mark sr)))))
     (if (>= pos (length (source sr)))
         #\Nul
         (char (source sr) pos))))
+
+(defmethod yread ((sr string-reader))
+  (prog1
+      (char (source sr) (mark-index (mark sr)))
+    (incf (mark-index (mark sr)))))
 
 (defclass stream-reader (reader)
   ((%buffer :type (vector character)
@@ -122,9 +186,6 @@
             :initform nil
             :accessor eofp)))
 
-(defmethod make-reader ((source stream))
-  (make-instance 'stream-reader :source source))
-
 (defmethod determine-encoding ((sr stream-reader))
   (stream-external-format (source sr)))
 
@@ -147,6 +208,12 @@
 (defmethod peek ((sr stream-reader) n)
   (assert (< n (unread sr)))
   (char (buffer sr) (+ n (pointer sr))))
+
+(defmethod yread ((sr stream-reader))
+  (prog1
+      (char (buffer sr) (pointer sr))
+    (incf (pointer sr))
+    (decf (unread sr))))
 
 ;;; reader.lisp ends here
 
