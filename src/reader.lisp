@@ -57,7 +57,7 @@
             :initform 0
             :accessor mark-index)
    (%line   :type fixnum
-            :initform 0
+            :initform 1
             :accessor mark-line)
    (%column :type fixnum
             :initform 0
