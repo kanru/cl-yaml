@@ -59,7 +59,8 @@
   queue)
 
 (defun dequeue (queue)
-  (pop (front queue)))
+  (unless (null (front queue))
+    (pop (front queue))))
 
 (defun inqueue (item n queue)
   (if (zerop n)

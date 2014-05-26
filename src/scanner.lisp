@@ -286,22 +286,17 @@ needed."
   t)
 
 (defun scan (scanner)
-  "Get the next token.
-Return multiple values TOKEN STREAM-END-P"
-  (break)
-  (cond
-    ;; No tokens after STREAM-END or error
-    ((stream-end-produced-p scanner)
-     (values nil t))
-    (t
-     ;; Ensure that the tokens queue contains enough tokens
-     (unless (token-available-p scanner)
-       (fetch-more-tokens scanner))
-     ;; Fetch the next token from the queue
-     (let ((token (dequeue (tokens scanner))))
-       (setf (token-available-p scanner) nil)
-       (incf (tokens-parsed scanner))
-       (values token (stream-end-produced-p scanner))))))
+  "Get the next token."
+  ;; Ensure that the tokens queue contains enough tokens
+  (unless (or (token-available-p scanner)
+              (stream-end-produced-p scanner))
+    (fetch-more-tokens scanner))
+  ;; Fetch the next token from the queue
+  (let ((token (dequeue (tokens scanner))))
+    (when token
+      (setf (token-available-p scanner) nil)
+      (incf (tokens-parsed scanner))
+      token)))
 
 (defun stale-simple-keys (scanner)
   "Check the list of potential simple keys and remove the positions
@@ -342,6 +337,7 @@ be returned to the parser."
                    (and (stale-simple-keys scanner)
                         (maybe-want-simple-key-p scanner)))
         :do (fetch-next-token scanner)
+        :until (stream-end-produced-p scanner)
         :finally (return (setf (token-available-p scanner) t))))
 
 (defun fetch-next-token (scanner)
