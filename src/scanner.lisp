@@ -29,7 +29,9 @@
 ;;;; Code:
 
 (defpackage #:yaml-scanner
-  (:use #:cl #:yaml-reader))
+  (:use #:cl
+        #:yaml-reader
+        #:yaml-queue))
 (in-package #:yaml-scanner)
 
 (defclass base-scanner ()
@@ -57,8 +59,8 @@
    (%token-available-p :type boolean
                        :initform nil
                        :accessor token-available-p)
-   (%tokens :type (or null (cons token cons))
-            :initform ()
+   (%tokens :type queue
+            :initform (make-queue)
             :accessor tokens)
    (%tokens-parsed :type fixnum
                    :initform 0
@@ -221,11 +223,10 @@ this case, append or insert the specified token into the token queue."
       ;; Create a token and insert it into the queue
       (let ((token (make-token type mark mark)))
         (if (= -1 number)
-            (push token (tokens scanner))
+            (enqueue token (tokens scanner))
             ;; FIXME insert to correct position
-            (let* ((n (- number (tokens-parsed scanner)))
-                   (cell (nthcdr n (tokens scanner))))
-              (setf (car cell) (cons token cell))))))))
+            (let ((n (- number (tokens-parsed scanner))))
+              (inqueue token n (tokens scanner))))))))
 
 (defun unroll-indent (scanner column)
   "Pop indentation levels from the indents stack until the current
@@ -237,10 +238,10 @@ level, append the BLOCK-END token."
     (loop :for indents-poped :from 0
           :while (> (indent scanner) column)
            ;; Create a token and append it to the queue
-          :do (push (make-token 'block-end
-                                (copy-mark scanner)
-                                (copy-mark scanner))
-                    (tokens scanner))
+          :do (enqueue (make-token 'block-end
+                                   (copy-mark scanner)
+                                   (copy-mark scanner))
+                       (tokens scanner))
               ;; Pop the indentation level
               (setf (indent scanner) (pop (indents scanner)))
           :finally (return indents-poped))))
@@ -263,7 +264,8 @@ needed."
         (setf (simple-key-possible-p simple-key) t
               (simple-key-required-p simple-key) required
               (simple-key-token-number simple-key) (+ (tokens-parsed scanner)
-                                                      (length (tokens scanner)))
+                                                      (queue-length
+                                                       (tokens scanner)))
               (simple-key-mark simple-key) (copy-mark scanner))
         (remove-simple-key scanner)
         (push simple-key (simple-keys scanner))))))
@@ -295,10 +297,8 @@ Return multiple values TOKEN STREAM-END-P"
      (unless (token-available-p scanner)
        (fetch-more-tokens scanner))
      ;; Fetch the next token from the queue
-     (let ((token (first (last (tokens scanner)))))
-       ;; Dequeue
-       (setf (tokens scanner) (nbutlast (tokens scanner))
-             (token-available-p scanner) nil)
+     (let ((token (dequeue (tokens scanner))))
+       (setf (token-available-p scanner) nil)
        (incf (tokens-parsed scanner))
        (values token (stream-end-produced-p scanner))))))
 
@@ -337,7 +337,7 @@ that cannot contain simple keys anymore."
   "Ensure that the tokens queue contains at least one token which can
 be returned to the parser."
   ;; While we need more tokens to fetch, do it
-  (loop :while (or (null (tokens scanner))
+  (loop :while (or (zerop (queue-length (tokens scanner)))
                    (and (stale-simple-keys scanner)
                         (maybe-want-simple-key-p scanner)))
         :do (fetch-next-token scanner)
@@ -516,7 +516,7 @@ be returned to the parser."
   (let ((token (make-stream-start (determine-encoding scanner)
                                   (copy-mark scanner)
                                   (copy-mark scanner))))
-    (push token (tokens scanner))
+    (enqueue token (tokens scanner))
     token))
 
 (defun fetch-stream-end (scanner)
@@ -535,7 +535,7 @@ be returned to the parser."
         (stream-end-produced-p scanner) t)
   ;; Create the STREAM-END token and append it to the queue
   (let ((token (make-stream-end (copy-mark scanner) (copy-mark scanner))))
-    (push token (tokens scanner))
+    (enqueue token (tokens scanner))
     token))
 
 (defun fetch-document-indicator (scanner type)
@@ -551,7 +551,7 @@ be returned to the parser."
   (let ((start-mark (copy-mark scanner)))
     (skip scanner 3)
     (let ((end-mark (copy-mark scanner)))
-      (push (make-token type start-mark end-mark) (tokens scanner)))))
+      (enqueue (make-token type start-mark end-mark) (tokens scanner)))))
 
 (defun increase-flow-level (scanner)
   "Increase the flow level and resize the simple key list if needed."
@@ -580,7 +580,7 @@ be returned to the parser."
   (let ((start-mark (copy-mark scanner)))
     (skip scanner)
     (let ((end-mark (copy-mark scanner)))
-      (push (make-token type start-mark end-mark) (tokens scanner)))))
+      (enqueue (make-token type start-mark end-mark) (tokens scanner)))))
 
 (defun fetch-flow-collection-end (scanner type)
   "Produce the FLOW-SEQUENCE-END or FLOW-MAPPING-END token."
@@ -596,7 +596,7 @@ be returned to the parser."
   (let ((start-mark (copy-mark scanner)))
     (skip scanner)
     (let ((end-mark (copy-mark scanner)))
-      (push (make-token type start-mark end-mark) (tokens scanner)))))
+      (enqueue (make-token type start-mark end-mark) (tokens scanner)))))
 
 (defun fetch-flow-entry (scanner)
   "Produce the FLOW-ENTRY token."
@@ -608,7 +608,7 @@ be returned to the parser."
   (let ((start-mark (copy-mark scanner)))
     (skip scanner)
     (let ((end-mark (copy-mark scanner)))
-      (push (make-token 'flow-entry start-mark end-mark) (tokens scanner)))))
+      (enqueue (make-token 'flow-entry start-mark end-mark) (tokens scanner)))))
 
 (defun fetch-block-entry (scanner)
   "Produce the BLOCK-ENTRY token."
@@ -637,7 +637,9 @@ be returned to the parser."
   (let ((start-mark (copy-mark scanner)))
     (skip scanner)
     (let ((end-mark (copy-mark scanner)))
-      (push (make-token 'block-entry start-mark end-mark) (tokens scanner)))))
+      (enqueue (make-token 'block-entry start-mark end-mark)
+               (tokens scanner)))))
+
 ;;; scanner.lisp ends here
 
 ;;; Local Variables:
