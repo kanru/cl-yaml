@@ -206,6 +206,26 @@
    (%style :type scalar-style
            :reader scalar-style)))
 
+(defun roll-indent (scanner column number type mark)
+  "Push the current indentation level to the stack and set the new
+level the current column is greater than the indentation level. In
+this case, append or insert the specified token into the token queue."
+  ;; In the flow context do nothing
+  (unless (plusp (flow-level scanner))
+    (when (< (indent scanner) column)
+      ;; Push the current indentation level to the stack and set the
+      ;; new indentation level
+      (push (indent scanner) (indents scanner))
+      (setf (indent scanner) column)
+      ;; Create a token and insert it into the queue
+      (let ((token (make-token type mark mark)))
+        (if (= -1 number)
+            (push token (tokens scanner))
+            ;; FIXME insert to correct position
+            (let* ((n (- number (tokens-parsed scanner)))
+                   (cell (nthcdr n (tokens scanner))))
+              (setf (car cell) (cons token cell))))))))
+
 (defun unroll-indent (scanner column)
   "Pop indentation levels from the indents stack until the current
 level becomes less or equal to the column.  For each indentation
@@ -370,13 +390,11 @@ be returned to the parser."
     (when (looking-at scanner "}")
       (return (fetch-flow-collection-end scanner 'flow-mapping-end)))
     ;; Is it the flow entry indicator?
-    #+todo
     (when (looking-at scanner ",")
       (return (fetch-flow-entry scanner)))
     ;; Is it the block entry indicator?
-    #+todo
     (when (and (looking-at scanner "-")
-               (blank-or-null-p scanner 1))
+               (blank-or-break-or-nul-p scanner 1))
       (return (fetch-block-entry scanner)))
     ;; Is it the key indicator?
     #+todo
@@ -579,6 +597,46 @@ be returned to the parser."
     (let ((end-mark (copy-mark scanner)))
       (push (make-token type start-mark end-mark) (tokens scanner)))))
 
+(defun fetch-flow-entry (scanner)
+  "Produce the FLOW-ENTRY token."
+  ;; Reset any potential simple keys on the current flow level
+  (remove-simple-key scanner)
+  ;; Simple keys are allowed after ','
+  (setf (simple-key-allowed-p scanner) t)
+  ;; Consume the token
+  (let ((start-mark (copy-mark scanner)))
+    (skip scanner)
+    (let ((end-mark (copy-mark scanner)))
+      (push (make-token 'flow-entry start-mark end-mark) (tokens scanner)))))
+
+(defun fetch-block-entry (scanner)
+  "Produce the BLOCK-ENTRY token."
+  ;; Check if the scanner is in the block context
+  (cond
+    ((zerop (flow-level scanner))
+     ;; Check if we are allowed to start a new entry
+     (when (not (simple-key-allowed-p scanner))
+       (error 'scanner-error
+              :context-mark (copy-mark scanner)
+              :problem "block sequence entries are not allowed in this context"
+              :problem-mark (copy-mark scanner)))
+     ;; Add the BLOCK-SEQUENCE-START token if needed
+     (roll-indent scanner (current-column scanner) -1
+                  'block-sequence-start (mark scanner)))
+    (t
+     ;; It is an error for the '-' indicator to occur in the flow
+     ;; context, but we let the Parser detect and report about it
+     ;; because the Parser is able to point to the context.
+     ))
+  ;; Reset any potential simple keys on the current flow level
+  (remove-simple-key scanner)
+  ;; Simple keys are allowed after '-'
+  (setf (simple-key-allowed-p scanner) t)
+  ;; Consume the token
+  (let ((start-mark (copy-mark scanner)))
+    (skip scanner)
+    (let ((end-mark (copy-mark scanner)))
+      (push (make-token 'block-entry start-mark end-mark) (tokens scanner)))))
 ;;; scanner.lisp ends here
 
 ;;; Local Variables:
