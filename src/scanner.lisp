@@ -36,7 +36,7 @@
   ((%indent :type fixnum
             :initform -1
             :accessor indent)
-   (%indents :type (list fixnum)
+   (%indents :type (or null (cons fixnum cons))
              :initform ()
              :accessor indents)
    (%simple-key-allowed-p :type boolean
@@ -51,13 +51,13 @@
    (%flow-level :type fixnum
                 :initform 0
                 :accessor flow-level)
-   (%simple-keys :type (list simple-key)
+   (%simple-keys :type (or null (cons simple-key cons))
                  :initform ()
                  :accessor simple-keys)
    (%token-available-p :type boolean
                        :initform nil
                        :accessor token-available-p)
-   (%tokens :type (list token)
+   (%tokens :type (or null (cons token cons))
             :initform ()
             :accessor tokens)
    (%tokens-parsed :type fixnum
@@ -131,7 +131,8 @@
 
 (defgeneric print-token-data (token stream)
   (:documentation "Print token's data")
-  (:method (token stream)))
+  (:method (token stream)
+    (declare (ignore token stream))))
 
 (defmethod print-object ((token token) stream)
   (print-unreadable-object (token stream :type t)
@@ -233,9 +234,9 @@ level, append the BLOCK-END token."
   ;; Do nothing in the flow context
   (unless (plusp (flow-level scanner))
     ;; Loop through the indentation levels in the stack 
-    (loop :while (> (indent scanner) column)
-          :for indents-poped :from 0
-          ;; Create a token and append it to the queue
+    (loop :for indents-poped :from 0
+          :while (> (indent scanner) column)
+           ;; Create a token and append it to the queue
           :do (push (make-token 'block-end
                                 (copy-mark scanner)
                                 (copy-mark scanner))

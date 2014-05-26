@@ -140,12 +140,6 @@
   (or (spacep reader n)
       (tabp reader n)))
 
-(defun blank-or-break-or-nul-p (reader &optional (n 0))
-  (declare (inline))
-  (or (blankp reader n)
-      (breakp reader n)
-      (nulp reader n)))
-
 (defun crlfp (reader &optional (n 0))
   (declare (inline))
   (and (check reader #\Return n)
@@ -155,13 +149,24 @@
   (declare (inline))
   (or (check reader #\Return n)
       (check reader #\Newline n)
-      (check reader #\Next-Line n)
-      #+sbcl (check reader #\LINE_SEPARATOR)
-      #+sbcl (check reader #\PARAGRAPH_SEPARATOR)))
+      #+unicode
+      (or
+       ;; #\Next-Line
+       (check reader (code-char #x85) n)
+       ;; #\LINE_SEPARATOR
+       (check reader (code-char #x2028) n)
+       ;; #\PARAGRAPH_SEPARATOR
+       (check reader (code-char #x2029) n))))
 
 (defun break-or-nul-p (reader &optional (n 0))
   (declare (inline))
   (or (breakp reader n)
+      (nulp reader n)))
+
+(defun blank-or-break-or-nul-p (reader &optional (n 0))
+  (declare (inline))
+  (or (blankp reader n)
+      (breakp reader n)
       (nulp reader n)))
 
 (defun skip (reader &optional (n 1))
@@ -183,9 +188,11 @@
 (defclass string-reader (reader) ())
 
 (defmethod determine-encoding ((sr string-reader))
+  (declare (ignore sr))
   nil)
 
 (defmethod ensure-buffer-length ((sr string-reader) n)
+  (declare (ignore sr n))
   t)
 
 (defmethod peek ((sr string-reader) n)
