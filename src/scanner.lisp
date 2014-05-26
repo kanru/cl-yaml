@@ -48,9 +48,9 @@
    (%stream-end-produced-p :type boolean
                            :initform nil
                            :accessor stream-end-produced-p)
-   (%flow-level-p :type boolean
-                  :initform nil
-                  :accessor flow-level-p)
+   (%flow-level :type fixnum
+                :initform 0
+                :accessor flow-level)
    (%simple-keys :type (list simple-key)
                  :initform ()
                  :accessor simple-keys)
@@ -110,13 +110,13 @@
               :accessor simple-key-possible-p)
    (%required :type boolean
               :initform nil
-              :reader simple-key-required-p)
+              :accessor simple-key-required-p)
    (%ntoken   :type fixnum
               :initform 0
-              :reader simple-key-token-number)
+              :accessor simple-key-token-number)
    (%mark     :type mark
               :initform (make-mark)
-              :reader simple-key-mark)))
+              :accessor simple-key-mark)))
 
 (defun make-simple-key ()
   (make-instance 'simple-key))
@@ -211,7 +211,7 @@
 level becomes less or equal to the column.  For each indentation
 level, append the BLOCK-END token."
   ;; Do nothing in the flow context
-  (unless (flow-level-p scanner)
+  (unless (plusp (flow-level scanner))
     ;; Loop through the indentation levels in the stack 
     (loop :while (> (indent scanner) column)
           :for indents-poped :from 0
@@ -223,6 +223,29 @@ level, append the BLOCK-END token."
               ;; Pop the indentation level
               (setf (indent scanner) (pop (indents scanner)))
           :finally (return indents-poped))))
+
+(defun save-simple-key (scanner)
+  "Check if a simple key may start at the current position and add it if
+needed."
+  ;; A simple key is required at the current position if the scanner
+  ;; is in the block context and the current column coincides with the
+  ;; indentation level.
+  (let ((required (and (zerop (flow-level scanner))
+                       (= (indent scanner) (current-column scanner)))))
+    ;; A simple key is required only when it is the first token in the
+    ;; current line. Therefore it is always allowed. But we add a
+    ;; check anyway.
+    (assert (or (simple-key-allowed-p scanner) (not required)))
+    ;; If the current position may start a simple key, save it
+    (when (simple-key-allowed-p scanner)
+      (let ((simple-key (make-simple-key)))
+        (setf (simple-key-possible-p simple-key) t
+              (simple-key-required-p simple-key) required
+              (simple-key-token-number simple-key) (+ (tokens-parsed scanner)
+                                                      (length (tokens scanner)))
+              (simple-key-mark simple-key) (copy-mark scanner))
+        (remove-simple-key scanner)
+        (push simple-key (simple-keys scanner))))))
 
 (defun remove-simple-key (scanner)
   "Remove a potential simple key at the current flow level."
@@ -335,19 +358,15 @@ be returned to the parser."
                (blank-or-break-or-nul-p scanner 3))
       (return (fetch-document-indicator scanner 'document-end)))
     ;; Is it the flow sequence start indicator?
-    #+todo
     (when (looking-at scanner "[")
       (return (fetch-flow-collection-start scanner 'flow-sequence-start)))
     ;; Is it the flow mapping start indicator?
-    #+todo
     (when (looking-at scanner "{")
       (return (fetch-flow-collection-start scanner 'flow-mapping-start)))
     ;; Is it the flow sequence end indicator?
-    #+todo
     (when (looking-at scanner "]")
       (return (fetch-flow-collection-end scanner 'flow-sequence-end)))
     ;; Is it the flow mapping end indicator?
-    #+todo
     (when (looking-at scanner "}")
       (return (fetch-flow-collection-end scanner 'flow-mapping-end)))
     ;; Is it the flow entry indicator?
@@ -384,12 +403,12 @@ be returned to the parser."
     ;; Is it a literal scalar?
     #+todo
     (when (and (looking-at scanner "|")
-               (not (flow-level-p scanner)))
+               (zerop (flow-level scanner)))
       (return (fetch-block-scalar scanner :literal)))
     ;; Is it a folded scalar
     #+todo
     (when (and (looking-at scanner ">")
-               (not (flow-level-p scanner)))
+               (zerop (flow-level scanner)))
       (return (fetch-block-scalar scanner :folded)))
     ;; Is it a single-quoted scalar?
     #+todo
@@ -421,7 +440,7 @@ be returned to the parser."
                                "!" "|" ">" "'" "\"" "%" "@" "`"))))
               (and (looking-at scanner "-")
                    (not (blank-p scanner 1)))
-              (and (not (flow-level-p scanner))
+              (and (zerop (flow-level scanner))
                    (or (looking-at scanner "?")
                        (looking-at scanner ":"))
                    (not (blank-or-null-p scanner 1))))
@@ -448,7 +467,7 @@ be returned to the parser."
         ;; after '-', '?', or ':' (complex value)
         :do (ensure-buffer-length scanner 1)
             (loop :while (or (spacep scanner)
-                             (and (or (flow-level-p scanner)
+                             (and (or (plusp (flow-level scanner))
                                       (simple-key-allowed-p scanner))
                                   (tabp scanner)))
                   :do (skip scanner)
@@ -461,7 +480,7 @@ be returned to the parser."
         :while (breakp scanner)
         :do (ensure-buffer-length scanner 2)
             (skip-line scanner)
-        :unless (flow-level-p scanner)
+        :unless (plusp (flow-level scanner))
           :do (setf (simple-key-allowed-p scanner) t)))
 
 (defun fetch-stream-start (scanner)
@@ -512,6 +531,51 @@ be returned to the parser."
   ;; Consume the token
   (let ((start-mark (copy-mark scanner)))
     (skip scanner 3)
+    (let ((end-mark (copy-mark scanner)))
+      (push (make-token type start-mark end-mark) (tokens scanner)))))
+
+(defun increase-flow-level (scanner)
+  "Increase the flow level and resize the simple key list if needed."
+  ;; Reset the simple key on the next level
+  (push (make-simple-key) (simple-keys scanner))
+  ;; Increase the flow level
+  (incf (flow-level scanner)))
+
+(defun decrease-flow-level (scanner)
+  "Decrease the flow level"
+  (when (plusp (flow-level scanner))
+    (decf (flow-level scanner))
+    (pop (simple-keys scanner))))
+
+(defun fetch-flow-collection-start (scanner type)
+  "Produce the FLOW-SEQUENCE-START or FLOW-MAPPING-START token."
+  (check-type type (or (eql flow-sequence-start)
+                       (eql flow-mapping-start)))
+  ;; The indicators '[' and '{' may start a simple key
+  (save-simple-key scanner)
+  ;; Increase the flow level
+  (increase-flow-level scanner)
+  ;; A simple key may follow the indicators '[' and '{'
+  (setf (simple-key-allowed-p scanner) t)
+  ;; Consume the token
+  (let ((start-mark (copy-mark scanner)))
+    (skip scanner)
+    (let ((end-mark (copy-mark scanner)))
+      (push (make-token type start-mark end-mark) (tokens scanner)))))
+
+(defun fetch-flow-collection-end (scanner type)
+  "Produce the FLOW-SEQUENCE-END or FLOW-MAPPING-END token."
+  (check-type type (or (eql flow-sequence-end)
+                       (eql flow-mapping-end)))
+  ;; Reset any potential simple key on the current flow level
+  (remove-simple-key scanner)
+  ;; Decrease the flow level
+  (decrease-flow-level scanner)
+  ;; No simple keys after the indicators ']' and '}'
+  (setf (simple-key-allowed-p scanner) nil)
+  ;; Consume the token
+  (let ((start-mark (copy-mark scanner)))
+    (skip scanner)
     (let ((end-mark (copy-mark scanner)))
       (push (make-token type start-mark end-mark) (tokens scanner)))))
 
