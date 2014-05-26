@@ -288,6 +288,7 @@ needed."
 (defun scan (scanner)
   "Get the next token.
 Return multiple values TOKEN STREAM-END-P"
+  (break)
   (cond
     ;; No tokens after STREAM-END or error
     ((stream-end-produced-p scanner)
@@ -398,9 +399,8 @@ be returned to the parser."
                (blank-or-break-or-nul-p scanner 1))
       (return (fetch-block-entry scanner)))
     ;; Is it the key indicator?
-    #+todo
     (when (and (looking-at scanner "?")
-               (blank-or-null-p scanner 1))
+               (blank-or-break-or-nul-p scanner 1))
       (return (fetch-key scanner)))
     ;; Is it the value indicator?
     #+todo
@@ -638,6 +638,31 @@ be returned to the parser."
     (skip scanner)
     (let ((end-mark (copy-mark scanner)))
       (enqueue (make-token 'block-entry start-mark end-mark)
+               (tokens scanner)))))
+
+(defun fetch-key (scanner)
+  "Produce the KEY token."
+  ;; In the block context, additional checks are required
+  (when (zerop (flow-level scanner))
+    ;; Check if we are allowed to start a new key (not nessesary
+    ;; simple)
+    (when (not (simple-key-allowed-p scanner))
+      (error 'scanner-error
+             :context-mark (copy-mark scanner)
+             :problem "mapping keys are not allowed in this context"
+             :problem-mark (copy-mark scanner)))
+    ;; Add the BLOCK-MAPPING-START token if needed
+    (roll-indent scanner (current-column scanner) -1
+                 'block-mapping-start (copy-mark scanner)))
+  ;; Reset any potential simple keys on the current flow level
+  (remove-simple-key scanner)
+  ;; Simple keys are allowed after '?' in the block context
+  (setf (simple-key-allowed-p scanner) (zerop (flow-level scanner)))
+  ;; Consume the token
+  (let ((start-mark (copy-mark scanner)))
+    (skip scanner)
+    (let ((end-mark (copy-mark scanner)))
+      (enqueue (make-token 'key start-mark end-mark)
                (tokens scanner)))))
 
 ;;; scanner.lisp ends here
