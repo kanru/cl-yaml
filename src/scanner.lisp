@@ -399,9 +399,8 @@ be returned to the parser."
                (blank-or-break-or-nul-p scanner 1))
       (return (fetch-key scanner)))
     ;; Is it the value indicator?
-    #+todo
     (when (and (looking-at scanner ":")
-               (blank-or-null-p scanner 1))
+               (blank-or-break-or-nul-p scanner 1))
       (return (fetch-value scanner)))
     ;; Is it an alias?
     #+todo
@@ -660,6 +659,45 @@ be returned to the parser."
     (let ((end-mark (copy-mark scanner)))
       (enqueue (make-token 'key start-mark end-mark)
                (tokens scanner)))))
+
+(defun fetch-value (scanner)
+  "Produce the VALUE token."
+  (let ((simple-key (first (simple-keys scanner))))
+    (cond
+      ((simple-key-possible-p simple-key)
+       (inqueue (make-token 'key
+                            (simple-key-mark simple-key)
+                            (simple-key-mark simple-key))
+                (- (simple-key-token-number simple-key)
+                   (tokens-parsed scanner))
+                (tokens scanner))
+       ;; In the block context, we may need to add the
+       ;; BLOCK-MAPPING-START token
+       (roll-indent scanner (current-column scanner)
+                    (simple-key-token-number simple-key)
+                    'block-mapping-start (simple-key-mark simple-key))
+       ;; Remove the simple key
+       (setf (simple-key-possible-p simple-key) nil
+             (simple-key-allowed-p scanner) nil))
+      (t
+       ;; The ':' indicator follows a complex key
+       ;; In the block context, extra checks are required
+       (when (zerop (flow-level scanner))
+         (when (not (simple-key-allowed-p scanner))
+           (error 'scanner-error
+                  :context-mark (copy-mark scanner)
+                  :problem "mapping values are not allowed in thin context"
+                  :problem-mark (copy-mark scanner)))
+         (roll-indent scanner (current-column scanner) -1
+                      'block-mapping-start (copy-mark scanner)))
+       ;; Simple keys after ':' are allowed in the block context
+       (setf (simple-key-allowed-p scanner) (zerop (flow-level scanner)))))
+    ;; Consume the token
+    (let ((start-mark (copy-mark scanner)))
+      (skip scanner)
+      (let ((end-mark (copy-mark scanner)))
+        (enqueue (make-token 'value start-mark end-mark)
+                 (tokens scanner))))))
 
 ;;; scanner.lisp ends here
 
