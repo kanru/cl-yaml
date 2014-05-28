@@ -125,6 +125,12 @@
         :for idx :from 0
         :always (check reader char idx)))
 
+(define-compiler-macro looking-at (&whole form reader str)
+  (if (and (typep str 'string)
+           (= 1 (length str)))
+      `(check ,reader ,(char str 0))
+      form))
+
 (defun alphap (reader &optional (n 0))
   (member (peek reader n)
           '(#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9
