@@ -41,14 +41,16 @@
            #:current-column
            #:peek
            #:yread
+           #:yread-line
            #:check
            #:alphap
            #:spacep
            #:tabp
            #:nulp
-           #:blank-or-break-or-nul-p
            #:breakp
            #:break-or-nul-p
+           #:blankp
+           #:blank-or-break-or-nul-p
            #:looking-at
            #:skip
            #:skip-line))
@@ -203,6 +205,11 @@
      (skip reader)
      (setf (mark-column (mark reader)) 0)
      (incf (mark-line (mark reader))))))
+
+(defun yread-line (reader)
+  ;; FIXME
+  (skip-line reader)
+  #\Newline)
 
 (defclass string-reader (reader) ())
 

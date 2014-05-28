@@ -216,11 +216,22 @@
             :reader tag-suffix)))
 (defclass scalar (token)
   ((%value :type string
+           :initarg :value
            :reader token-value)
    (%length :type fixnum
+            :initarg :length
             :reader scalar-length)
    (%style :type scalar-style
+           :initarg :style
            :reader scalar-style)))
+
+(defun make-scalar (value length style start-mark end-mark)
+  (check-type style (or (eql :plain)))
+  (make-instance 'scalar :value value :length length :style style
+                         :start start-mark :end end-mark))
+
+(defmethod print-token-data ((token scalar) stream)
+  (format stream "~A ~S" (scalar-style token) (token-value token)))
 
 (defun roll-indent (scanner column number type mark)
   "Push the current indentation level to the stack and set the new
@@ -457,18 +468,16 @@ be returned to the parser."
     ;; if it is followed by a non-space character.
     ;;
     ;; XXX The last rule is more restrictive than the specification requires.
-    #+todo
-    (when (or (not (or (blank-or-null-p scanner)
-                       (some (lambda (str)
-                               (looking-at scanner str))
-                             '("-" "?" ":" "," "[" "]" "{" "}" "#" "&" "*"
-                               "!" "|" ">" "'" "\"" "%" "@" "`"))))
+    (when (or (not (or (blank-or-break-or-nul-p scanner)
+                       (member (peek scanner 0)
+                               '(#\- #\? #\: #\, #\[ #\] #\{ #\} #\# #\& #\*
+                                 #\! #\| #\> #\' #\\ #\% #\@ #\`))))
               (and (looking-at scanner "-")
-                   (not (blank-p scanner 1)))
+                   (not (blankp scanner 1)))
               (and (zerop (flow-level scanner))
                    (or (looking-at scanner "?")
                        (looking-at scanner ":"))
-                   (not (blank-or-null-p scanner 1))))
+                   (not (blank-or-break-or-nul-p scanner 1))))
       (return (fetch-plain-scalar scanner)))
     ;; If we don't determine the token type so far, it is an error
     (error 'scanner-error
@@ -754,6 +763,126 @@ be returned to the parser."
   (setf (simple-key-allowed-p scanner) nil)
   ;; Create the alias or anchor token and append it to the queue
   (enqueue (scan-anchor scanner type) (tokens scanner)))
+
+(defun join-string (string1 string2)
+  "Destructively join two strings. STRING1 must be adjustable."
+  (let* ((len1 (length string1))
+         (len2 (length string2))
+         (size (+ len1 len2)))
+    (adjust-array string1 (list size) :fill-pointer size)
+    (replace string1 string2 :start1 len1)))
+
+(defun scan-plain-scalar (scanner)
+  "Scan a plain scalar."
+  (let ((start-mark (copy-mark scanner))
+        (end-mark (copy-mark scanner))
+        (string (make-array 0 :element-type 'character
+                              :adjustable t
+                              :fill-pointer t))
+        (leading-break (make-array 0 :element-type 'character
+                                     :adjustable t
+                                     :fill-pointer t))
+        (trailing-breaks (make-array 0 :element-type 'character
+                                       :adjustable t
+                                       :fill-pointer t))
+        (whitespaces (make-array 0 :element-type 'character
+                                   :adjustable t
+                                   :fill-pointer t))
+        (leading-blanks-p nil)
+        (indent (1+ (indent scanner))))
+    ;; Consume the content of the plain scalar
+    (loop :do (ensure-buffer-length scanner 4)
+              ;; Check for a document indicator
+          :until (and (zerop (current-column scanner))
+                      (or (looking-at scanner "---")
+                          (looking-at scanner "..."))
+                      (blank-or-break-or-nul-p scanner 3))
+          ;; Check for a comment
+          :until (looking-at scanner "#")
+          ;; Consume non-blank characters
+          :do (loop :until (blank-or-break-or-nul-p scanner)
+                    ;; Check for 'x:x' in the flow context. TODO: Fix the test "spec-08-13".
+                    :when (and (plusp (flow-level scanner))
+                               (looking-at scanner ":")
+                               (not (blank-or-break-or-nul-p scanner 1)))
+                      :do (error 'scanner-error
+                                 :context "while scanning a plain scalar"
+                                 :context-mark start-mark
+                                 :problem "found unexpected ':'"
+                                 :problem-mark (copy-mark scanner))
+                          ;; Check if we need to join whitespaces and breaks
+                    :when (or leading-blanks-p
+                              (plusp (length whitespaces)))
+                      :do (cond
+                            (leading-blanks-p
+                             ;; Do we need to fold the line breaks?
+                             (cond
+                               ((char= (char leading-break 0) #\Newline)
+                                (if (zerop (length trailing-breaks))
+                                    (vector-push-extend #\Space string)
+                                    (setf string (join-string string trailing-breaks)
+                                          (fill-pointer trailing-breaks) 0))
+                                (setf (fill-pointer leading-break) 0))
+                               (t
+                                (setf string (join-string leading-break trailing-breaks)
+                                      (fill-pointer leading-break) 0
+                                      (fill-pointer trailing-breaks) 0)))
+                             (setf leading-blanks-p nil))
+                            (t
+                             (setf string (join-string string whitespaces)
+                                   (fill-pointer whitespaces) 0)))
+                    :do
+                       ;; Copy the character
+                       (vector-push-extend (yread scanner) string)
+                       (setf end-mark (copy-mark scanner))
+                       (ensure-buffer-length scanner 2))
+              ;; Is it the end?
+          :until (not (or (blankp scanner)
+                          (breakp scanner)))
+          ;; Consume blank character
+          :do (ensure-buffer-length scanner 1)
+              (loop :while (or (blankp scanner)
+                               (breakp scanner))
+                    :do (cond
+                          ((blankp scanner)
+                           ;; Check for tab character that abuse indentation
+                           (when (and leading-blanks-p
+                                      (< (current-column scanner) indent)
+                                      (tabp scanner))
+                             (error 'scanner-error
+                                    :context "while scanning a plain scalar"
+                                    :context-mark start-mark
+                                    :problem "found a tab character that violate indentation"
+                                    :problem-mark (copy-mark scanner)))
+                           ;; Consume a space or a tab character
+                           (if leading-blanks-p
+                               (skip scanner)
+                               (vector-push-extend (yread scanner) whitespaces)))
+                          (t
+                           (ensure-buffer-length scanner 2)
+                           ;; Check if it is a first line break
+                           (cond
+                             (leading-blanks-p
+                              (setf (fill-pointer whitespaces) 0
+                                    leading-blanks-p t)
+                              (vector-push-extend (yread-line scanner) leading-break))
+                             (t
+                              (vector-push-extend (yread-line scanner) trailing-breaks)))))
+                        (ensure-buffer-length scanner 1))
+          :until (and (zerop (flow-level scanner))
+                      (< (current-column scanner) indent))
+          ;; Note that we change the 'simple-key-allowed-p' flag
+          :finally (when leading-blanks-p
+                     (setf (simple-key-allowed-p scanner) t)))
+    (make-scalar string (length string) :plain start-mark end-mark)))
+
+(defun fetch-plain-scalar (scanner)
+  "Produce the SCALAR(...,plain) token."
+  ;; A plain scalar could be a simple key
+  (save-simple-key scanner)
+  ;; A simple key cannot follow a flow scalar
+  (setf (simple-key-allowed-p scanner) nil)
+  (enqueue (scan-plain-scalar scanner) (tokens scanner)))
 
 ;;; scanner.lisp ends here
 
