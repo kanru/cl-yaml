@@ -192,10 +192,23 @@
 (defclass value (token) ())
 (defclass alias (token)
   ((%value :type string
+           :initarg :value
            :reader token-value)))
 (defclass anchor (token)
   ((%value :type string
+           :initarg :value
            :reader token-value)))
+
+(defun make-anchor-or-alias (type value start-mark end-mark)
+  (check-type type (or (eql alias) (eql anchor)))
+  (make-instance type :value value :start start-mark :end end-mark))
+
+(defmethod print-token-data ((token anchor) stream)
+  (prin1 (token-value token) stream))
+
+(defmethod print-token-data ((token alias) stream)
+  (prin1 (token-value token) stream))
+
 (defclass tag (token)
   ((%handle :type string
             :reader tag-handle)
@@ -403,11 +416,9 @@ be returned to the parser."
                (blank-or-break-or-nul-p scanner 1))
       (return (fetch-value scanner)))
     ;; Is it an alias?
-    #+todo
     (when (looking-at scanner "*")
       (return (fetch-anchor scanner 'alias)))
     ;; Is it an anchor?
-    #+todo
     (when (looking-at scanner "&")
       (return (fetch-anchor scanner 'anchor)))
     ;; Is it a tag?
@@ -698,6 +709,51 @@ be returned to the parser."
       (let ((end-mark (copy-mark scanner)))
         (enqueue (make-token 'value start-mark end-mark)
                  (tokens scanner))))))
+
+(defun scan-anchor (scanner type)
+  "Create the ALIAS or ANCHOR token."
+  (check-type type (or (eql anchor)
+                       (eql alias)))
+  (let ((start-mark (copy-mark scanner)))
+    ;; Eat the indicator character
+    (skip scanner)
+    ;; Consume the value
+    (ensure-buffer-length scanner 1)
+    (let* ((length 0)
+           (string (with-output-to-string (string)
+                     (loop :while (alphap scanner)
+                           :do (write-char (yread scanner) string)
+                               (ensure-buffer-length scanner 1)
+                               (incf length))))
+           (end-mark (copy-mark scanner)))
+      ;; Check if length of the anchor is greater than 0 and it is
+      ;; followed by a whitespaces character or one of the indicators:
+      ;;
+      ;;     '?', ':', ',', ']', '}', '%', '@', '`'
+      (when (or (zerop length)
+                (not (blank-or-break-or-nul-p scanner))
+                (some (lambda (char)
+                        (check scanner char))
+                      '(#\? #\: #\, #\] #\} #\% #\@ #\`)))
+        (error 'scanner-error
+               :context (if (eql type 'anchor)
+                            "while scanning an anchor"
+                            "while scanning an alias")
+               :context-mark start-mark
+               :problem "did not find expected alphabetic or numeric character"
+               :problem-mark (copy-mark scanner)))
+      (make-anchor-or-alias type string start-mark end-mark))))
+
+(defun fetch-anchor (scanner type)
+  "Produce the ALIAS or ANCHOR token."
+  (check-type type (or (eql anchor)
+                       (eql alias)))
+  ;; An anchor or an alias could be a simple key
+  (save-simple-key scanner)
+  ;; A simple key cannot follow an anchor or an alias
+  (setf (simple-key-allowed-p scanner) nil)
+  ;; Create the alias or anchor token and append it to the queue
+  (enqueue (scan-anchor scanner type) (tokens scanner)))
 
 ;;; scanner.lisp ends here
 
