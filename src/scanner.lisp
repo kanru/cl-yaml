@@ -810,7 +810,12 @@ be returned to the parser."
                                  :context-mark start-mark
                                  :problem "found unexpected ':'"
                                  :problem-mark (copy-mark scanner))
-                          ;; Check if we need to join whitespaces and breaks
+                    :when (or (and (check scanner #\:)
+                                   (blank-or-break-or-nul-p scanner 1))
+                              (member (peek scanner 0)
+                                      '(#\, #\: #\? #\[ #\] #\{ #\})))
+                      :do (return)
+                    ;; Check if we need to join whitespaces and breaks
                     :when (or leading-blanks-p
                               (plusp (length whitespaces)))
                       :do (cond
