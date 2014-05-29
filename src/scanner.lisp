@@ -740,10 +740,10 @@ be returned to the parser."
       ;;
       ;;     '?', ':', ',', ']', '}', '%', '@', '`'
       (when (or (zerop length)
-                (not (blank-or-break-or-nul-p scanner))
-                (some (lambda (char)
-                        (check scanner char))
-                      '(#\? #\: #\, #\] #\} #\% #\@ #\`)))
+                (not (or (blank-or-break-or-nul-p scanner)
+                         (some (lambda (char)
+                                 (check scanner char))
+                               '(#\? #\: #\, #\] #\} #\% #\@ #\`)))))
         (error 'scanner-error
                :context (if (eql type 'anchor)
                             "while scanning an anchor"
