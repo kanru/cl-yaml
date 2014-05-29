@@ -211,9 +211,21 @@
 
 (defclass tag (token)
   ((%handle :type string
+            :initarg :handle
             :reader tag-handle)
    (%suffix :type string
+            :initarg :suffix
             :reader tag-suffix)))
+
+(defun make-tag (handle suffix start-mark end-mark)
+  (make-instance 'tag :handle handle
+                      :suffix suffix
+                      :start start-mark
+                      :end end-mark))
+
+(defmethod print-token-data ((token tag) stream)
+  (format stream "~S ~S" (tag-handle token) (tag-suffix token)))
+
 (defclass scalar (token)
   ((%value :type string
            :initarg :value
@@ -435,7 +447,6 @@ be returned to the parser."
     (when (looking-at scanner "&")
       (return (fetch-anchor scanner 'anchor)))
     ;; Is it a tag?
-    #+todo
     (when (looking-at scanner "!")
       (return (fetch-tag scanner)))
     ;; Is it a literal scalar?
@@ -1082,6 +1093,207 @@ be returned to the parser."
   (setf (simple-key-allowed-p scanner) nil)
   (enqueue (scan-flow-scalar scanner (eql type :single-quoted))
            (tokens scanner)))
+
+(defun utf8-width (octet)
+  (cond
+    ((= (logand octet #b10000000) #b00000000) 1)
+    ((= (logand octet #b11100000) #b11000000) 2)
+    ((= (logand octet #b11110000) #b11100000) 3)
+    ((= (logand octet #b11111000) #b11110000) 4)
+    (t 0)))
+
+(defun utf8-octet (octet)
+  (case (utf8-width octet)
+    (1 (logand octet #b01111111))
+    (2 (logand octet #b00011111))
+    (3 (logand octet #b00001111))
+    (4 (logand octet #b00000111))
+    (otherwise
+     (assert (= (logand octet #b11000000) #b10000000))
+     (logand octet #b00111111))))
+
+(defun scan-uri-escapes (scanner directivep start-mark)
+  "Decode an URI-escape sequence corresponding to a single UTF-8 character."
+  (let ((width 0)
+        (code 0))
+    (loop :do (ensure-buffer-length scanner 3)
+              (when (not (and (check scanner #\%)
+                              (hexp scanner 1)
+                              (hexp scanner 2)))
+                (error 'scanner-error
+                       :context (if directivep
+                                    "while parsing a %TAG directive"
+                                    "while parsing a tag")
+                       :context-mark start-mark
+                       :problem "did not find URI escaped octet"
+                       :problem-mark (copy-mark scanner)))
+              ;; Get the octet
+              (let ((octet (+ (ash (hexp scanner 1) 4)
+                              (hexp scanner 2))))
+                (cond
+                  ((zerop width)
+                   (setf width (utf8-width octet))
+                   (when (zerop width)
+                     (error 'scanner-error
+                            :context (if directivep
+                                         "while parsing a %TAG directive"
+                                         "while parsing a tag")
+                            :context-mark start-mark
+                            :problem "found an incorrect leading UTF-8 otect"
+                            :problem-mark (copy-mark scanner)))
+                   (setf code (utf8-octet octet)))
+                  (t
+                   (when (/= (logand octet #b11000000) #b10000000)
+                     (error 'scanner-error
+                            :context (if directivep
+                                         "while parsing a %TAG directive"
+                                         "while parsing a tag")
+                            :context-mark start-mark
+                            :problem "found an incorrect trailing UTF-8 otect"
+                            :problem-mark (copy-mark scanner)))
+                   (setf code (+ (ash code 6) (utf8-octet octet))))))
+              (decf width)
+          :while (plusp width))
+    code))
+
+(defun scan-tag-uri (scanner directivep handle start-mark)
+  "Scan a TAG."
+  (let* ((length (length handle))
+         (string (make-array length :element-type 'character
+                                    :adjustable t
+                                    :fill-pointer t)))
+    ;; Copy the head if needed
+    ;; Note that we don't copy the leading '!' character.
+    (when (plusp length)
+      (replace string handle :start2 1)
+      (setf (fill-pointer string) (1- length)))
+    ;; The set of characters that may appear in URI is as follows:
+    ;; 
+    ;;      '0'-'9', 'A'-'Z', 'a'-'z', '_', '-', ';', '/', '?', ':', '@', '&',
+    ;;      '=', '+', '$', ',', '.', '!', '~', '*', '\'', '(', ')', '[', ']',
+    ;;      '%'.
+    (loop :while (or (alphap scanner)
+                     (member (peek scanner 0)
+                             '(#\; #\/ #\? #\: #\@ #\& #\= #\+ #\$
+                               #\, #\. #\! #\~ #\* #\\ #\( #\) #\[
+                               #\] #\%)))
+          ;; Check if it is a URI-escape sequence
+          :do
+             (if (check scanner #\%)
+                 (let ((uri-escapes
+                         (scan-uri-escapes scanner directivep start-mark)))
+                   (setf string (join-string string uri-escapes)))
+                 (vector-push-extend (yread scanner) string))
+             (incf length)
+             (ensure-buffer-length scanner 1))
+    ;; Check if the tag is non-empty
+    (when (zerop length)
+      (error 'scanner-error
+             :context (if directivep
+                          "while parsing a %TAG directive"
+                          "while parsing a tag")
+             :context-mark start-mark
+             :problem "did not find expected tag URI"
+             :problem-mark (copy-mark scanner)))
+    string))
+
+(defun scan-tag-handle (scanner directivep start-mark)
+  (let ((handle (make-array 0 :element-type 'character
+                              :adjustable t
+                              :fill-pointer t)))
+    ;; Check the inital '!' character
+    (ensure-buffer-length scanner 1)
+    (when (not (check scanner #\!))
+      (error 'scanner-error
+             :context (if directivep
+                          "while scanning a tag directive"
+                          "while scanning a tag")
+             :context-mark start-mark
+             :problem "did not find expected '!'"
+             :problem-mark (copy-mark scanner)))
+    (vector-push-extend (yread scanner) handle)
+    ;; Copy all subsequent alphabetical and numerical characters
+    (ensure-buffer-length scanner 1)
+    (loop :while (alphap scanner)
+          :do (vector-push-extend (yread scanner) handle)
+              (ensure-buffer-length scanner 1))
+    ;; Check if the trailing character is '!' and copy it
+    (cond
+      ((check scanner #\!)
+       (vector-push-extend (yread scanner) handle))
+      (t
+       ;; It's either the '!' tag or not really a tag handle.  If it's
+       ;; a %TAG directive, it's an error.  If it's a tag token, it
+       ;; must be a part of URI.
+       (when (and directivep
+                  (not (and (= (length handle) 1)
+                            (char/= (char handle 0) #\!))))
+         (error 'scanner-error
+                :context "while parsing a tag directive"
+                :context-mark start-mark
+                :problem "did not find expected '!'"
+                :problem-mark (copy-mark scanner)))))
+    handle))
+
+(defun scan-tag (scanner)
+  "Scan a TAG token."
+  (let ((start-mark (copy-mark scanner))
+        (handle nil)
+        (suffix nil))
+    ;; Check if the tag is in the canonical form
+    (ensure-buffer-length scanner 2)
+    (cond
+      ((check scanner #\< 1)
+       ;; Eat '!<'
+       (skip scanner 2)
+       ;; Consume the tag value
+       (setf suffix (scan-tag-uri scanner nil nil start-mark))
+       ;; Check '>' and eat it
+       (when (not (check scanner #\>))
+         (error 'scanner-error
+                :context "while scanning a tag"
+                :context-mark start-mark
+                :problem "did not find the expected '>'"
+                :problem-mark (copy-mark scanner)))
+       (skip scanner))
+      (t
+       ;; The tag has either the '!suffix or the '!handle!suffix' form
+       ;; First, try to scan a handle
+       (setf handle (scan-tag-handle scanner nil start-mark))
+       ;; Check if it is, indeed, a handle
+       (cond
+         ((and (char= (char handle 0) #\!)
+               (> (length handle) 1)
+               (char= (char handle (1- (length handle))) #\!))
+          ;; Scan the suffix now
+          (setf suffix (scan-tag-uri scanner nil nil start-mark)))
+         (t
+          ;; It wasn't a handle after all. Scan the rest of the tag
+          (setf suffix (scan-tag-uri scanner nil handle start-mark))
+          ;; Set the handle to '!'
+          (setf handle "!")
+          ;; A special case: the '!' tag. Set the handle to '' and the
+          ;; suffix to '!'
+          (when (zerop (length suffix))
+            (rotatef suffix handle))))))
+    ;; Check the character which ends the tag
+    (ensure-buffer-length scanner 1)
+    (when (not (blank-or-break-or-nul-p scanner))
+      (error 'scanner-error
+             :context "while scanning a tag"
+             :context-mark start-mark
+             :problem "did not find expected whitespace or line break"
+             :problem-mark (copy-mark scanner)))
+    (let ((end-mark (copy-mark scanner)))
+      (make-tag handle suffix start-mark end-mark))))
+
+(defun fetch-tag (scanner)
+  "Produce the TAG token."
+  ;; A tag could be a simple key
+  (save-simple-key scanner)
+  ;; A simple key cannot follow a tag
+  (setf (simple-key-allowed-p scanner) nil)
+  (enqueue (scan-tag scanner) (tokens scanner)))
 
 ;;; scanner.lisp ends here
 
