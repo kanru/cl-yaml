@@ -44,6 +44,7 @@
            #:yread-line
            #:check
            #:alphap
+           #:hexp
            #:spacep
            #:tabp
            #:nulp
@@ -143,6 +144,9 @@
             #\K #\L #\M #\N #\O #\P #\Q #\R #\S #\T
             #\U #\V #\W #\X #\Y #\Z
             #\_ #\-)))
+
+(defun hexp (reader &optional (n 0))
+  (digit-char-p (peek reader n) 16))
 
 (DEFUN nulp (reader &optional (n 0))
   (declare (inline))

@@ -226,7 +226,9 @@
            :reader scalar-style)))
 
 (defun make-scalar (value length style start-mark end-mark)
-  (check-type style (or (eql :plain)))
+  (check-type style (or (eql :plain)
+                        (eql :single-quoted)
+                        (eql :double-quoted)))
   (make-instance 'scalar :value value :length length :style style
                          :start start-mark :end end-mark))
 
@@ -447,11 +449,9 @@ be returned to the parser."
                (zerop (flow-level scanner)))
       (return (fetch-block-scalar scanner :folded)))
     ;; Is it a single-quoted scalar?
-    #+todo
     (when (looking-at scanner "'")
       (return (fetch-flow-scalar scanner :single-quoted)))
     ;; Is it a double-quoted scalar?
-    #+todo
     (when (looking-at scanner "\"")
       (return (fetch-flow-scalar scanner :double-quoted)))
     ;; Is it a plain scalar?
@@ -883,6 +883,200 @@ be returned to the parser."
   ;; A simple key cannot follow a flow scalar
   (setf (simple-key-allowed-p scanner) nil)
   (enqueue (scan-plain-scalar scanner) (tokens scanner)))
+
+(defun scan-flow-scalar (scanner singlep)
+  "Scan a quoted scalar."
+  (let ((start-mark (copy-mark scanner))
+        (leading-blanks-p nil)
+        (string (make-array 0 :element-type 'character
+                              :adjustable t
+                              :fill-pointer t))
+        (leading-break (make-array 0 :element-type 'character
+                                     :adjustable t
+                                     :fill-pointer t))
+        (trailing-breaks (make-array 0 :element-type 'character
+                                       :adjustable t
+                                       :fill-pointer t))
+        (whitespaces (make-array 0 :element-type 'character
+                                   :adjustable t
+                                   :fill-pointer t)))
+    ;; Eat the left quote.
+    (skip scanner)
+    ;; Consume the content of the quoted scalar
+    (loop :do (ensure-buffer-length scanner 4)
+          :when (and (zerop (current-column scanner))
+                     (looking-at scanner "---")
+                     (looking-at scanner "...")
+                     (blank-or-break-or-nul-p scanner 3))
+            :do (error 'scanner-error
+                       :context "while scanning a quoted scalar"
+                       :context-mark start-mark
+                       :problem "found unexpected document indicator"
+                       :problem-mark (copy-mark scanner))
+          ;; Check for EOF
+          :when (nulp scanner)
+            :do (error 'scanner-error
+                       :context "while scanning a quoted scalar"
+                       :context-mark start-mark
+                       :problem "found unexpected end of stream"
+                       :problem-mark (copy-mark scanner))
+          :do
+             ;; Consume non-blank characters
+             (ensure-buffer-length scanner 2)
+             (loop :until (blank-or-break-or-nul-p scanner)
+                   :do
+                      (cond
+                        ;; Check for an escaped single quote
+                        ((and singlep
+                              (looking-at scanner "''"))
+                         (vector-push-extend #\' string)
+                         (skip scanner 2))
+                        ;; Check for the right quote
+                        ((check scanner (if singlep #\' #\"))
+                         (return))
+                        ;; Check for an escaped line break
+                        ((and (not singlep)
+                              (check scanner #\\)
+                              (breakp scanner 1))
+                         (ensure-buffer-length scanner 3)
+                         (skip scanner)
+                         (skip-line scanner)
+                         (setf leading-blanks-p t)
+                         (return))
+                        ((and (not singlep)
+                              (check scanner #\\))
+                         (let ((code-length 0))
+                           (case (peek scanner 1)
+                             (#\0
+                              (vector-push-extend #\Nul string))
+                             (#\a
+                              (vector-push-extend (code-char #x07) string))
+                             (#\b
+                              (vector-push-extend (code-char #x08) string))
+                             ((#\t #\Tab)
+                              (vector-push-extend (code-char #x09) string))
+                             (#\n
+                              (vector-push-extend (code-char #x0A) string))
+                             (#\v
+                              (vector-push-extend (code-char #x0B) string))
+                             (#\f
+                              (vector-push-extend (code-char #x0C) string))
+                             (#\r
+                              (vector-push-extend (code-char #x0D) string))
+                             (#\e
+                              (vector-push-extend (code-char #x1B) string))
+                             (#\Space
+                              (vector-push-extend (code-char #x20) string))
+                             (#\"
+                              (vector-push-extend #\" string))
+                             (#\'
+                              (vector-push-extend #\" string))
+                             (#\N
+                              (vector-push-extend (code-char #x85) string))
+                             (#\_
+                              (vector-push-extend (code-char #xA0) string))
+                             (#\L
+                              (vector-push-extend (code-char #x2028) string))
+                             (#\P
+                              (vector-push-extend (code-char #x2029) string))
+                             (#\x
+                              (setf code-length 2))
+                             (#\u
+                              (setf code-length 4))
+                             (#\U
+                              (setf code-length 8))
+                             (otherwise
+                              (error 'scanner-error
+                                     :context "while parsing a quoted scalar"
+                                     :context-mark start-mark
+                                     :problem "found unknown escape character"
+                                     :problem-mark (copy-mark scanner))))
+                           (skip scanner 2)
+                           ;; Consume an arbitrary escape code
+                           (when (plusp code-length)
+                             (let ((value 0))
+                               (ensure-buffer-length scanner code-length)
+                               (dotimes (k code-length)
+                                 (when (not (hexp scanner k))
+                                   (error 'scanner-error
+                                          :context "while parsing a quoted scalar"
+                                          :context-mark start-mark
+                                          :problem "did not find expected hexdecimal number"
+                                          :problem-mark (copy-mark scanner)))
+                                 (setf value
+                                       (+ (ash value 4) (hexp scanner k))))
+                               ;; Check the value and write the character
+                               (when (or (and (>= value #xD800)
+                                              (<= value #xDFFF))
+                                         (> value #x10FFFF))
+                                 (error 'scanner-error
+                                        :context "while parsing a quoted scalar"
+                                        :context-mark start-mark
+                                        :problem "found invalid Unicode character escape code"
+                                        :problem-mark (copy-mark scanner)))
+                               (vector-push-extend (code-char value) string)
+                               (skip scanner code-length)))))
+                        (t
+                         (vector-push-extend (yread scanner) string)))
+                      (ensure-buffer-length scanner 2))
+          :until (check scanner (if singlep #\' #\"))
+          :do
+             (ensure-buffer-length scanner 1)
+             (loop :while (or (blankp scanner)
+                              (breakp scanner))
+                   :do
+                      (cond
+                        ((blankp scanner)
+                         ;; Consume a space or a tab character
+                         (if leading-blanks-p
+                             (skip scanner)
+                             (vector-push-extend (yread scanner) whitespaces)))
+                        (t
+                         (ensure-buffer-length scanner 2)
+                         ;; Check if it is a first line break
+                         (if leading-blanks-p
+                             (vector-push-extend (yread-line scanner)
+                                                 trailing-breaks)
+                             (progn (setf (fill-pointer whitespaces) 0
+                                          leading-blanks-p t)
+                                    (vector-push-extend (yread-line scanner)
+                                                        leading-break)))))
+                      (ensure-buffer-length scanner 1))
+             ;; Join the whitespaces or fold line breaks
+             (cond
+               (leading-blanks-p
+                ;; Do we need to fold line breaks?
+                (cond
+                  ((char= (char leading-break 0) #\Newline)
+                   (if (zerop (length trailing-breaks))
+                       (vector-push-extend #\Space string)
+                       (setf string (join-string string trailing-breaks)
+                             (fill-pointer trailing-breaks) 0)))
+                  (t
+                   (setf string (join-string string leading-break)
+                         string (join-string string trailing-breaks)
+                         (fill-pointer leading-break) 0
+                         (fill-pointer trailing-breaks) 0))))
+               (t
+                (setf string (join-string string whitespaces)
+                      (fill-pointer whitespaces) 0))))
+    ;; Eat the right quote
+    (skip scanner)
+    (let ((end-mark (copy-mark scanner)))
+      (make-scalar string (length string)
+                   (if singlep :single-quoted :double-quoted)
+                   start-mark end-mark))))
+
+(defun fetch-flow-scalar (scanner type)
+  "Produce the SCALAR(...,single-quoted) or SCALAR(...,double-quoted) tokens."
+  (check-type type (or (eql :single-quoted)
+                       (eql :double-quoted)))
+  ;; A plain scalar could be a simple key
+  (save-simple-key scanner)
+  ;; A simple key cannot follow a flow scalar.
+  (setf (simple-key-allowed-p scanner) nil)
+  (enqueue (scan-flow-scalar scanner (eql type :single-quoted))
+           (tokens scanner)))
 
 ;;; scanner.lisp ends here
 
