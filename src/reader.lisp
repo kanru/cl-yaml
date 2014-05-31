@@ -45,6 +45,7 @@
            #:check
            #:alphap
            #:hexp
+           #:digitp
            #:spacep
            #:tabp
            #:nulp
@@ -133,6 +134,9 @@
            (= 1 (length str)))
       `(check ,reader ,(char str 0))
       form))
+
+(defun digitp (reader &optional (n 0))
+  (digit-char-p (peek reader n) 10))
 
 (defun alphap (reader &optional (n 0))
   (member (peek reader n)

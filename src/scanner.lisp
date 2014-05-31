@@ -169,14 +169,34 @@
 
 (defclass version-directive (token)
   ((%major :type fixnum
+           :initarg :major
            :reader version-major)
    (%minor :type fixnum
+           :initarg :minor
            :reader version-minor)))
+
+(defun make-version-directive (major minor start-mark end-mark)
+  (make-instance 'version-directive :major major :minor minor
+                                    :start start-mark :end end-mark))
+
+(defmethod print-token-data ((token version-directive) stream)
+  (format stream "(~A,~A)" (version-major token) (version-minor token)))
+
 (defclass tag-directive (token)
   ((%handle :type string
+            :initarg :handle
             :reader tag-handle)
    (%suffix :type string
+            :initarg :suffix
             :reader tag-suffix)))
+
+(defun make-tag-directive (handle suffix start-mark end-mark)
+  (make-instance 'tag-directive :handle handle :suffix suffix
+                                :start start-mark :end end-mark))
+
+(defmethod print-token-data ((token tag-directive) stream)
+  (format stream "(~A,~A)" (tag-handle token) (tag-suffix token)))
+
 (defclass document-start (token) ())
 (defclass document-end (token) ())
 (defclass block-sequence-start (token) ())
@@ -399,7 +419,6 @@ be returned to the parser."
     (when (nulp scanner)
       (return (fetch-stream-end scanner)))
     ;; Is it a directive?
-    #+todo
     (when (and (zerop (current-column scanner))
                (looking-at scanner "%"))
       (return (fetch-directive scanner)))
@@ -1226,8 +1245,7 @@ be returned to the parser."
        ;; a %TAG directive, it's an error.  If it's a tag token, it
        ;; must be a part of URI.
        (when (and directivep
-                  (not (and (= (length handle) 1)
-                            (char/= (char handle 0) #\!))))
+                  (not (string= handle "!")))
          (error 'scanner-error
                 :context "while parsing a tag directive"
                 :context-mark start-mark
@@ -1294,6 +1312,196 @@ be returned to the parser."
   ;; A simple key cannot follow a tag
   (setf (simple-key-allowed-p scanner) nil)
   (enqueue (scan-tag scanner) (tokens scanner)))
+
+(defun scan-directive-name (scanner start-mark)
+  "Scan the directive name.
+
+Scope:
+     %YAML   1.1     # a comment \n
+      ^^^^
+     %TAG    !yaml!  tag:yaml.org,2002:  \n
+      ^^^"
+  (let ((name (make-array 0 :element-type 'character
+                            :adjustable t
+                            :fill-pointer t)))
+    ;; Consume the directive name
+    (ensure-buffer-length scanner 1)
+    (loop :while (alphap scanner)
+          :do (vector-push-extend (yread scanner) name)
+              (ensure-buffer-length scanner 1))
+    ;; Check if the name is empty
+    (when (zerop (length name))
+      (error 'scanner-error
+             :context "while scanning a directive"
+             :context-mark start-mark
+             :problem "could not find expected directive name"
+             :problem-mark (copy-mark scanner)))
+    ;; Check for an blank character after the name
+    (when (not (blank-or-break-or-nul-p scanner))
+      (error 'scanner-error
+             :context "while scanning a directive"
+             :context-mark start-mark
+             :problem "found unexpected non-alphabetical character"
+             :problem-mark (copy-mark scanner)))
+    name))
+
+(defparameter *max-number-length* 9)
+
+(defun scan-version-directive-number (scanner start-mark)
+  "Scan the version number of VERSION-DIRECTIVE
+
+Scope:
+     %YAML    1.1    # a comment \n
+              ^
+     %YAML    1.1    # a comment \n
+                ^"
+  (let ((value 0)
+        (length 0))
+    (ensure-buffer-length scanner 1)
+    ;; Repeat while the next character is digit
+    (loop :while (digitp scanner)
+          :do (incf length)
+              (when (> length *max-number-length*)
+                (error 'scanner-error
+                       :context "while scanning a %YAML directive"
+                       :context-mark start-mark
+                       :problem "found extremely long version number"
+                       :problem-mark (copy-mark scanner)))
+              (setf value (+ (* value 10) (digit-char-p (yread scanner) 10)))
+              (ensure-buffer-length scanner 1))
+    (when (zerop length)
+      (error 'scanner-error
+             :context "while scanning a %YAML directive"
+             :context-mark start-mark
+             :problem "did not find expected version number"
+             :problem-mark (copy-mark scanner)))
+    value))
+
+(defun scan-version-directive-value (scanner start-mark)
+  "Scan the value of VERSION-DIRECTIVE
+
+Scope:
+     %YAML    1.1    # a comment \n
+          ^^^^^^^"
+  ;; Eat whitespaces
+  (ensure-buffer-length scanner 1)
+  (loop :while (blankp scanner)
+        :do (skip scanner)
+            (ensure-buffer-length scanner 1))
+  ;; Consume the major version number
+  (let ((major (scan-version-directive-number scanner start-mark)))
+    ;; Eat '.'
+    (when (not (check scanner #\.))
+      (error 'scanner-error
+             :context "while scanning a %YAML directive"
+             :context-mark start-mark
+             :problem "did not find expected digit or '.' character"
+             :problem-mark (copy-mark scanner)))
+    (skip scanner)
+    ;; Consume the minor version number
+    (let ((minor (scan-version-directive-number scanner start-mark)))
+      (values major minor))))
+
+(defun scan-tag-directive-value (scanner start-mark)
+  "Scan the value of a TAG-DIRECTIVE token
+
+Scope:
+     %TAG     !yaml!  tag:yaml.org,2002:  \n
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+  ;; Eat whitespaces
+  (ensure-buffer-length scanner 1)
+  (loop :while (blankp scanner)
+        :do (skip scanner)
+            (ensure-buffer-length scanner 1))
+  ;; Scan a handle
+  (let ((handle (scan-tag-handle scanner t start-mark)))
+    ;; Expect a whitespace
+    (ensure-buffer-length scanner 1)
+    (when (not (blankp scanner))
+      (error 'scanner-error
+             :context "while scanning a %TAG directive"
+             :context-mark start-mark
+             :problem "did not find expected whitespace"
+             :problem-mark (copy-mark scanner)))
+    ;; Eat whitespaces
+    (loop :while (blankp scanner)
+          :do (skip scanner)
+              (ensure-buffer-length scanner 1))
+    ;; Scan a prefix
+    (let ((prefix (scan-tag-uri scanner t nil start-mark)))
+      ;; Expect a whitespace or line break
+      (ensure-buffer-length scanner 1)
+      (when (not (blank-or-break-or-nul-p scanner))
+        (error 'scanner-error
+               :context "while scanning a %TAG directive"
+               :context-mark start-mark
+               :problem "did not find expected whitespace or line break"
+               :problem-mark (copy-mark scanner)))
+      (values handle prefix))))
+
+(defun scan-directive (scanner)
+  "Scan a YAML-DIRECTIVE or TAG-DIRECTIVE token.
+
+Scope:
+    %YAML    1.1    # a comment \n
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    %TAG    !yaml!  tag:yaml.org,2002:  \n
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+  (let ((start-mark (copy-mark scanner)))
+    ;; Eat '%'
+    (skip scanner)
+    ;; Scan the directive name
+    (prog1
+        (let ((name (scan-directive-name scanner start-mark)))
+          (cond
+            ((string= name "YAML")
+             ;; Scan the VERSION directive value
+             (multiple-value-bind (major minor)
+                 (scan-version-directive-value scanner start-mark)
+               (make-version-directive major minor
+                                       start-mark (copy-mark scanner))))
+            ((string= name "TAG")
+             ;; Scan the TAG directive value
+             (multiple-value-bind (handle prefix)
+                 (scan-tag-directive-value scanner start-mark)
+               (make-tag-directive handle prefix
+                                   start-mark (copy-mark scanner))))
+            (t
+             (error 'scanner-error
+                    :context "while scanning a directive"
+                    :context-mark start-mark
+                    :problem "found unknown directive name"
+                    :problem-mark (copy-mark scanner)))))
+      ;; Eat the rest of the line including any comments
+      (loop :while (blankp scanner)
+            :do (skip scanner)
+                (ensure-buffer-length scanner 1))
+      (when (check scanner #\#)
+        (loop :while (not (or (breakp scanner)
+                              (nulp scanner)))
+              :do (skip scanner)
+                  (ensure-buffer-length scanner 1)))
+      ;; Check if we are at the end of the line
+      (when (not (or (breakp scanner)
+                     (nulp scanner)))
+        (error 'scanner-error
+               :context "while scanning a directive"
+               :context-mark start-mark
+               :problem "did not find expected comment or line break"
+               :problem-mark (copy-mark scanner)))
+      ;; Eat a line break
+      (when (breakp scanner)
+        (ensure-buffer-length scanner 2)
+        (skip-line scanner)))))
+
+(defun fetch-directive (scanner)
+  "Produce a VERSION-DIRECTIVE or TAG-DIRECTIVE token."
+  ;; Reset the indentation level
+  (unroll-indent scanner -1)
+  ;; Reset simple keys
+  (remove-simple-key scanner)
+  (setf (simple-key-allowed-p scanner) nil)
+  (enqueue (scan-directive scanner) (tokens scanner)))
 
 ;;; scanner.lisp ends here
 
