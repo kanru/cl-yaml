@@ -724,7 +724,7 @@ be returned to the parser."
                 (tokens scanner))
        ;; In the block context, we may need to add the
        ;; BLOCK-MAPPING-START token
-       (roll-indent scanner (current-column scanner)
+       (roll-indent scanner (mark-column (simple-key-mark simple-key))
                     (simple-key-token-number simple-key)
                     'block-mapping-start (simple-key-mark simple-key))
        ;; Remove the simple key
