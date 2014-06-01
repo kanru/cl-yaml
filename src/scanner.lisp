@@ -260,7 +260,9 @@
 (defun make-scalar (value length style start-mark end-mark)
   (check-type style (or (eql :plain)
                         (eql :single-quoted)
-                        (eql :double-quoted)))
+                        (eql :double-quoted)
+                        (eql :literal)
+                        (eql :folded)))
   (make-instance 'scalar :value value :length length :style style
                          :start start-mark :end end-mark))
 
@@ -469,12 +471,10 @@ be returned to the parser."
     (when (looking-at scanner "!")
       (return (fetch-tag scanner)))
     ;; Is it a literal scalar?
-    #+todo
     (when (and (looking-at scanner "|")
                (zerop (flow-level scanner)))
       (return (fetch-block-scalar scanner :literal)))
     ;; Is it a folded scalar
-    #+todo
     (when (and (looking-at scanner ">")
                (zerop (flow-level scanner)))
       (return (fetch-block-scalar scanner :folded)))
@@ -532,7 +532,7 @@ be returned to the parser."
         :do (ensure-buffer-length scanner 1)
             (loop :while (or (spacep scanner)
                              (and (or (plusp (flow-level scanner))
-                                      (simple-key-allowed-p scanner))
+                                      (not (simple-key-allowed-p scanner)))
                                   (tabp scanner)))
                   :do (skip scanner)
                       (ensure-buffer-length scanner 1))
@@ -541,7 +541,7 @@ be returned to the parser."
           :do (loop :until (break-or-nul-p scanner)
                     :do (skip scanner)
                         (ensure-buffer-length scanner 1))
-        :while (breakp scanner)
+        :until (not (breakp scanner))
         :do (ensure-buffer-length scanner 2)
             (skip-line scanner)
         :unless (plusp (flow-level scanner))
@@ -663,6 +663,7 @@ be returned to the parser."
      ;; Check if we are allowed to start a new entry
      (when (not (simple-key-allowed-p scanner))
        (error 'scanner-error
+              :context "while scanning a block entry"
               :context-mark (copy-mark scanner)
               :problem "block sequence entries are not allowed in this context"
               :problem-mark (copy-mark scanner)))
@@ -733,11 +734,14 @@ be returned to the parser."
        ;; The ':' indicator follows a complex key
        ;; In the block context, extra checks are required
        (when (zerop (flow-level scanner))
+         ;; Check if we are allowed to start a complex value
          (when (not (simple-key-allowed-p scanner))
            (error 'scanner-error
+                  :context "while scanning a value token"
                   :context-mark (copy-mark scanner)
-                  :problem "mapping values are not allowed in thin context"
+                  :problem "mapping values are not allowed in this context"
                   :problem-mark (copy-mark scanner)))
+         ;; Add the BLOCK-MAPPING-START token if needed
          (roll-indent scanner (current-column scanner) -1
                       'block-mapping-start (copy-mark scanner)))
        ;; Simple keys after ':' are allowed in the block context
@@ -897,7 +901,7 @@ be returned to the parser."
                            (ensure-buffer-length scanner 2)
                            ;; Check if it is a first line break
                            (cond
-                             (leading-blanks-p
+                             ((not leading-blanks-p)
                               (setf (fill-pointer whitespaces) 0
                                     leading-blanks-p t)
                               (vector-push-extend (yread-line scanner) leading-break))
@@ -1502,6 +1506,178 @@ Scope:
   (remove-simple-key scanner)
   (setf (simple-key-allowed-p scanner) nil)
   (enqueue (scan-directive scanner) (tokens scanner)))
+
+(defun scan-block-scalar-breaks (scanner start-mark indent breaks)
+  "Scan indentation spaces and line breaks for a block
+scalar. Determine the indentation level if needed."
+  (let ((max-indent 0)
+        (end-mark (copy-mark scanner)))
+    ;; Eat the indentation spaces and line breaks
+    (loop :do (ensure-buffer-length scanner 1)
+              (loop :while (and (or (zerop indent)
+                                    (< (current-column scanner) indent))
+                                (spacep scanner))
+                    :do (skip scanner)
+                        (ensure-buffer-length scanner 1))
+              (setf max-indent (max max-indent (current-column scanner)))
+              ;; Check for a tab character messing the indentation
+          :when (and (or (zerop indent)
+                         (< (current-column scanner) indent))
+                     (tabp scanner))
+            :do (error 'scanner-error
+                       :context "while scanning a block scalar"
+                       :context-mark start-mark
+                       :problem "found a tab character where an indentation space is expected")
+          :until (not (breakp scanner))
+          ;; Consume the line break
+          :do (ensure-buffer-length scanner 2)
+              (vector-push-extend (yread-line scanner) breaks))
+    ;; Determine the indentation level if needed
+    (when (zerop indent)
+      (cond
+        ((< max-indent (1+ (indent scanner)))
+         (setf indent (1+ (indent scanner))))
+        ((< max-indent 1)
+         (setf indent 1))
+        (t
+         (setf indent max-indent))))
+    (values indent end-mark)))
+
+(defun scan-block-scalar (scanner literalp)
+  "Scan a block scalar."
+  (let ((start-mark (copy-mark scanner))
+        (string (make-array 0 :element-type 'character
+                              :adjustable t
+                              :fill-pointer t))
+        (leading-break (make-array 0 :element-type 'character
+                                     :adjustable t
+                                     :fill-pointer t))
+        (trailing-breaks (make-array 0 :element-type 'character
+                                       :adjustable t
+                                       :fill-pointer t))
+        (chomping 0)
+        (indent 0)
+        (increment 0)
+        (leading-blank-p nil))
+    ;; Eat the indicator '|' or '>'
+    (skip scanner)
+    ;; Scan the additional block scalar indicators
+    (ensure-buffer-length scanner 1)
+    ;; Check for a chomping indicator
+    (cond
+      ((or (check scanner #\+)
+           (check scanner #\-))
+       ;; Set the chomping method an eat the indicator
+       (setf chomping (if (check scanner #\+) 1 -1))
+       (skip scanner)
+       ;; Check for an indentation indicator
+       (ensure-buffer-length scanner 1)
+       (when (digitp scanner)
+         ;; Check that the indentation is greater than 0
+         (when (check scanner #\0)
+           (error 'scanner-error
+                  :context "while scanning a block scalar"
+                  :context-mark start-mark
+                  :problem "found an indentation indicator equal to 0"
+                  :problem-mark (copy-mark scanner)))
+         ;; Get the indentation level and eat the indicator
+         (setf increment (digitp scanner))
+         (skip scanner)))
+      ;; Do the same as above, but in the opposite order
+      ((digitp scanner)
+       (when (check scanner #\0)
+         (error 'scanner-error
+                :context "while scanning a block scalar"
+                :context-mark start-mark
+                :problem "found an indentation indicator equal to 0"
+                :problem-mark (copy-mark scanner)))
+       (setf increment (digitp scanner))
+       (skip scanner)
+       (ensure-buffer-length scanner 1)
+       (when (or (check scanner #\+)
+                 (check scanner #\-))
+         (setf chomping (if (check scanner #\+) 1 -1))
+         (skip scanner))))
+    ;; Eat whitespaces and comments to the end of the line
+    (ensure-buffer-length scanner 1)
+    (loop :while (blankp scanner)
+          :do (skip scanner)
+              (ensure-buffer-length scanner 1))
+    (when (check scanner #\#)
+      (loop :while (not (blank-or-break-or-nul-p scanner))
+            :do (skip scanner)
+                (ensure-buffer-length scanner 1)))
+    ;; Check if we are at the end of the line
+    (when (not (blank-or-break-or-nul-p scanner))
+      (error 'scanner-error
+             :context "while scanning a block scalar"
+             :context-mark start-mark
+             :problem "did not find expected comment or line break"
+             :problem-mark (copy-mark scanner)))
+    ;; Eat a line break
+    (when (breakp scanner)
+      (ensure-buffer-length scanner 2)
+      (skip-line scanner))
+    (let ((end-mark (copy-mark scanner)))
+      (when (plusp increment)
+        (setf indent (if (>= (indent scanner) 0)
+                         (+ (indent scanner) increment)
+                         increment)))
+      ;; Scan the leading line breaks and determine the indentation
+      ;; level if needed
+      (multiple-value-setq (indent end-mark)
+        (scan-block-scalar-breaks scanner start-mark indent trailing-breaks))
+      ;; Scan the block scalar content
+      (ensure-buffer-length scanner 1)
+      (loop :while (and (= (current-column scanner)
+                           indent)
+                        (not (nulp scanner)))
+            ;; We are at the beginning of a non-empty line.
+            ;; Is it a trailing whitespace?
+            :for trailing-blank-p := (blankp scanner)
+            ;; Check if we need to fold the leading line break
+            :when (and (not literalp)
+                       (plusp (length leading-break))
+                       (char= (char leading-break 0) #\Newline)
+                       (not leading-blank-p)
+                       (not trailing-blank-p))
+              :do (when (zerop (length trailing-breaks))
+                    (vector-push-extend #\Space string))
+                  (setf (fill-pointer leading-break) 0)
+            :else
+              :do (setf string (join-string string leading-break)
+                        (fill-pointer leading-break) 0)
+            :do (setf string (join-string string trailing-breaks)
+                      (fill-pointer trailing-breaks) 0
+                      leading-blank-p (blankp scanner))
+                (loop :while (not (break-or-nul-p scanner))
+                      :do (vector-push-extend (yread scanner) string)
+                          (ensure-buffer-length scanner 1))
+                (ensure-buffer-length scanner 2)
+                (vector-push-extend (yread-line scanner) leading-break)
+                ;; Eat the following indentation spaces and line breaks
+                (multiple-value-setq (indent end-mark)
+                  (scan-block-scalar-breaks scanner start-mark
+                                            indent trailing-breaks)))
+      ;; Chomp the tail
+      (when (/= chomping -1)
+        (setf string (join-string string leading-break)))
+      (when (= chomping 1)
+        (setf string (join-string string trailing-breaks)))
+      (make-scalar string (length string)
+                   (if literalp :literal :folded)
+                   start-mark end-mark))))
+
+(defun fetch-block-scalar (scanner literal-or-folded)
+  "Produce the SCALAR(...,literal) or SCALAR(...,folded) tokens."
+  (check-type literal-or-folded (or (eql :literal)
+                                    (eql :folded)))
+  ;; Remove any potential simple keys
+  (remove-simple-key scanner)
+  ;; A simple key may follow a block scalar
+  (setf (simple-key-allowed-p scanner) t)
+  (enqueue (scan-block-scalar scanner (eql literal-or-folded :literal))
+           (tokens scanner)))
 
 ;;; scanner.lisp ends here
 

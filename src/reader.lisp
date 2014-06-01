@@ -273,8 +273,10 @@
      (unread sr))
     (t
      ;; Move the unread characters to the beginning of the buffer
-     (replace (buffer sr) (buffer sr) :start2 (pointer sr) :end2 (unread sr))
-     (setf (fill-pointer (buffer sr)) (unread sr))
+     (replace (buffer sr) (buffer sr) :start2 (pointer sr)
+                                      :end2 (+ (pointer sr) (unread sr)))
+     (setf (fill-pointer (buffer sr)) (unread sr)
+           (pointer sr) 0)
      ;; Fill the buffer until it has enough characters
      (dotimes (i n)
        (vector-push-extend (read-char (source sr) nil #\Nul) (buffer sr))
