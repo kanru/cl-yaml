@@ -285,8 +285,13 @@
        (setf (eofp sr) t)))))
 
 (defmethod peek ((sr stream-reader) n)
-  (assert (< n (unread sr)))
-  (char (buffer sr) (+ n (pointer sr))))
+  (cond
+    ((and (eofp sr)
+          (>= n (unread sr)))
+     #\Nul)
+    (t
+     (assert (< n (unread sr)))
+     (char (buffer sr) (+ n (pointer sr))))))
 
 (defmethod yread ((sr stream-reader))
   (prog1
