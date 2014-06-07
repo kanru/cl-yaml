@@ -228,7 +228,7 @@
            :reader token-value)))
 
 (defun make-anchor-or-alias (type value start-mark end-mark)
-  (check-type type (or (eql alias) (eql anchor)))
+  (check-type type (member alias anchor))
   (make-instance type :value value :start start-mark :end end-mark))
 
 (defmethod print-token-data ((token anchor) stream)
@@ -266,11 +266,8 @@
            :reader scalar-style)))
 
 (defun make-scalar (value length style start-mark end-mark)
-  (check-type style (or (eql :plain)
-                        (eql :single-quoted)
-                        (eql :double-quoted)
-                        (eql :literal)
-                        (eql :folded)))
+  (check-type style (member :plain :single-quoted
+                            :double-quoted :literal :folded))
   (make-instance 'scalar :value value :length length :style style
                          :start start-mark :end end-mark))
 
@@ -576,8 +573,7 @@ be returned to the parser."
 
 (defun fetch-document-indicator (scanner type)
   "Produce the DOCUMENT-START or DOCUMENT-END token."
-  (check-type type (or (eql document-start)
-                       (eql document-end)))
+  (check-type type (member document-start document-end))
   ;; Reset the indentation level
   (unroll-indent scanner -1)
   ;; Reset simple keys
@@ -604,8 +600,7 @@ be returned to the parser."
 
 (defun fetch-flow-collection-start (scanner type)
   "Produce the FLOW-SEQUENCE-START or FLOW-MAPPING-START token."
-  (check-type type (or (eql flow-sequence-start)
-                       (eql flow-mapping-start)))
+  (check-type type (member flow-sequence-start flow-mapping-start))
   ;; The indicators '[' and '{' may start a simple key
   (save-simple-key scanner)
   ;; Increase the flow level
@@ -620,8 +615,7 @@ be returned to the parser."
 
 (defun fetch-flow-collection-end (scanner type)
   "Produce the FLOW-SEQUENCE-END or FLOW-MAPPING-END token."
-  (check-type type (or (eql flow-sequence-end)
-                       (eql flow-mapping-end)))
+  (check-type type (member flow-sequence-end flow-mapping-end))
   ;; Reset any potential simple key on the current flow level
   (remove-simple-key scanner)
   ;; Decrease the flow level
@@ -743,8 +737,7 @@ be returned to the parser."
 
 (defun scan-anchor (scanner type)
   "Create the ALIAS or ANCHOR token."
-  (check-type type (or (eql anchor)
-                       (eql alias)))
+  (check-type type (member anchor alias))
   (let ((start-mark (copy-mark scanner)))
     ;; Eat the indicator character
     (skip scanner)
@@ -777,8 +770,7 @@ be returned to the parser."
 
 (defun fetch-anchor (scanner type)
   "Produce the ALIAS or ANCHOR token."
-  (check-type type (or (eql anchor)
-                       (eql alias)))
+  (check-type type (member anchor alias))
   ;; An anchor or an alias could be a simple key
   (save-simple-key scanner)
   ;; A simple key cannot follow an anchor or an alias
@@ -1096,8 +1088,7 @@ be returned to the parser."
 
 (defun fetch-flow-scalar (scanner type)
   "Produce the SCALAR(...,single-quoted) or SCALAR(...,double-quoted) tokens."
-  (check-type type (or (eql :single-quoted)
-                       (eql :double-quoted)))
+  (check-type type (member :single-quoted :double-quoted))
   ;; A plain scalar could be a simple key
   (save-simple-key scanner)
   ;; A simple key cannot follow a flow scalar.
@@ -1659,8 +1650,7 @@ scalar. Determine the indentation level if needed."
 
 (defun fetch-block-scalar (scanner literal-or-folded)
   "Produce the SCALAR(...,literal) or SCALAR(...,folded) tokens."
-  (check-type literal-or-folded (or (eql :literal)
-                                    (eql :folded)))
+  (check-type literal-or-folded (member :literal :folded))
   ;; Remove any potential simple keys
   (remove-simple-key scanner)
   ;; A simple key may follow a block scalar
