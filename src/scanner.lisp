@@ -69,32 +69,40 @@
 (defclass string-scanner (base-scanner string-reader) ())
 (defclass stream-scanner (base-scanner stream-reader) ())
 
-(define-condition scanner-error (error)
-  ((%context :type string
-             :initarg :context
-             :reader error-context)
+(define-condition scan-error (error)
+  ((%scanner :type scanner
+             :initarg :scanner
+             :reader scan-error-scanner)
+   (%context :type string
+                :initarg :context
+                :reader scan-error-context)
    (%context-mark :type mark
                   :initarg :context-mark
-                  :reader error-context-mark)
+                  :initform nil
+                  :reader scan-error-context-mark)
    (%problem :type string
              :initarg :problem
-             :reader error-problem)
+             :reader scan-error-problem)
    (%problem-mark :type mark
                   :initarg :problem-mark
-                  :reader error-problem-mark))
+                  :initform nil
+                  :reader scan-error-problem-mark))
   (:report (lambda (error stream)
-             (with-accessors ((problem-mark error-problem-mark)
-                              (problem error-problem)
-                              (context-mark error-context-mark)
-                              (context error-context)) error
-               (format stream "Line ~A Column ~A: Error, ~A~%"
-                       (mark-line context-mark)
-                       (mark-column context-mark)
-                       context)
-               (format stream "Line ~A Column ~A: ~A"
-                       (mark-line problem-mark)
-                       (mark-column problem-mark)
-                       problem)))))
+             (with-accessors ((scanner scan-error-scanner)
+                              (problem-mark scan-error-problem-mark)
+                              (problem scan-error-problem)
+                              (context-mark scan-error-context-mark)
+                              (context scan-error-context)) error
+               (let ((problem-mark (or problem-mark (copy-mark scanner)))
+                     (context-mark (or context-mark (copy-mark scanner))))
+                 (format stream "Line ~A Column ~A: ~A~%~
+                                 Line ~A Column ~A: ~A"
+                         (mark-line context-mark)
+                         (mark-column context-mark)
+                         context
+                         (mark-line problem-mark)
+                         (mark-column problem-mark)
+                         problem))))))
 
 (defgeneric make-scanner (source)
   (:documentation
@@ -336,8 +344,8 @@ needed."
     ;; If the key is required, it is an error.
     (when (and (simple-key-possible-p simple-key)
                (simple-key-required-p simple-key))
-      (error 'scanner-error
-             :context "while scanning a simple key"
+      (error 'scan-error
+             :context "While scanning a simple key"
              :context-mark (simple-key-mark simple-key)
              :problem "could not find expected ':'"
              :problem-mark (copy-mark scanner)))
@@ -375,8 +383,8 @@ that cannot contain simple keys anymore."
                        (< (+ (mark-index simple-key-mark) 1024)
                           (mark-index position-mark))))
           :do (if (simple-key-required-p simple-key)
-                  (error 'scanner-error
-                         :context "while scanning a simple key"
+                  (error 'scan-error
+                         :context "While scanning a simple key"
                          :context-mark simple-key-mark
                          :problem "could not find expected ':'"
                          :problem-mark position-mark)
@@ -510,11 +518,10 @@ be returned to the parser."
                    (not (blank-or-break-or-nul-p scanner 1))))
       (return (fetch-plain-scalar scanner)))
     ;; If we don't determine the token type so far, it is an error
-    (error 'scanner-error
-           :context "while scanning for the next token"
-           :context-mark (copy-mark scanner)
-           :problem "found character that cannot start any token"
-           :problem-mark (copy-mark scanner))))
+    (error 'scan-error
+           :scanner scanner
+           :context "While scanning for the next token"
+           :problem "found character that cannot start any token")))
 
 (defun scan-to-next-token (scanner)
   (loop :do (ensure-buffer-length scanner 1)
@@ -662,11 +669,10 @@ be returned to the parser."
     ((zerop (flow-level scanner))
      ;; Check if we are allowed to start a new entry
      (when (not (simple-key-allowed-p scanner))
-       (error 'scanner-error
-              :context "while scanning a block entry"
-              :context-mark (copy-mark scanner)
-              :problem "block sequence entries are not allowed in this context"
-              :problem-mark (copy-mark scanner)))
+       (error 'scan-error
+              :scanner scanner
+              :context "While scanning a block entry"
+              :problem "block sequence entries are not allowed in this context"))
      ;; Add the BLOCK-SEQUENCE-START token if needed
      (roll-indent scanner (current-column scanner) -1
                   'block-sequence-start (mark scanner)))
@@ -693,10 +699,9 @@ be returned to the parser."
     ;; Check if we are allowed to start a new key (not nessesary
     ;; simple)
     (when (not (simple-key-allowed-p scanner))
-      (error 'scanner-error
-             :context-mark (copy-mark scanner)
-             :problem "mapping keys are not allowed in this context"
-             :problem-mark (copy-mark scanner)))
+      (error 'scan-error
+             :scanner scanner
+             :problem "Mapping keys are not allowed in this context"))
     ;; Add the BLOCK-MAPPING-START token if needed
     (roll-indent scanner (current-column scanner) -1
                  'block-mapping-start (copy-mark scanner)))
@@ -736,11 +741,10 @@ be returned to the parser."
        (when (zerop (flow-level scanner))
          ;; Check if we are allowed to start a complex value
          (when (not (simple-key-allowed-p scanner))
-           (error 'scanner-error
-                  :context "while scanning a value token"
-                  :context-mark (copy-mark scanner)
-                  :problem "mapping values are not allowed in this context"
-                  :problem-mark (copy-mark scanner)))
+           (error 'scan-error
+                  :scanner scanner
+                  :context "While scanning a value token"
+                  :problem "mapping values are not allowed in this context"))
          ;; Add the BLOCK-MAPPING-START token if needed
          (roll-indent scanner (current-column scanner) -1
                       'block-mapping-start (copy-mark scanner)))
@@ -778,13 +782,13 @@ be returned to the parser."
                          (some (lambda (char)
                                  (check scanner char))
                                '(#\? #\: #\, #\] #\} #\% #\@ #\`)))))
-        (error 'scanner-error
+        (error 'scan-error
+               :scanner scanner
                :context (if (eql type 'anchor)
-                            "while scanning an anchor"
-                            "while scanning an alias")
+                            "While scanning an anchor"
+                            "While scanning an alias")
                :context-mark start-mark
-               :problem "did not find expected alphabetic or numeric character"
-               :problem-mark (copy-mark scanner)))
+               :problem "did not find expected alphabetic or numeric character"))
       (make-anchor-or-alias type string start-mark end-mark))))
 
 (defun fetch-anchor (scanner type)
@@ -839,11 +843,11 @@ be returned to the parser."
                     :when (and (plusp (flow-level scanner))
                                (looking-at scanner ":")
                                (not (blank-or-break-or-nul-p scanner 1)))
-                      :do (error 'scanner-error
-                                 :context "while scanning a plain scalar"
+                      :do (error 'scan-error
+                                 :scanner scanner
+                                 :context "While scanning a plain scalar"
                                  :context-mark start-mark
-                                 :problem "found unexpected ':'"
-                                 :problem-mark (copy-mark scanner))
+                                 :problem "found unexpected ':'")
                     :when (or (and (check scanner #\:)
                                    (blank-or-break-or-nul-p scanner 1))
                               (member (peek scanner 0)
@@ -888,11 +892,11 @@ be returned to the parser."
                            (when (and leading-blanks-p
                                       (< (current-column scanner) indent)
                                       (tabp scanner))
-                             (error 'scanner-error
-                                    :context "while scanning a plain scalar"
+                             (error 'scan-error
+                                    :scanner scanner
+                                    :context "While scanning a plain scalar"
                                     :context-mark start-mark
-                                    :problem "found a tab character that violate indentation"
-                                    :problem-mark (copy-mark scanner)))
+                                    :problem "found a tab character that violate indentation"))
                            ;; Consume a space or a tab character
                            (if leading-blanks-p
                                (skip scanner)
@@ -947,18 +951,18 @@ be returned to the parser."
                      (looking-at scanner "---")
                      (looking-at scanner "...")
                      (blank-or-break-or-nul-p scanner 3))
-            :do (error 'scanner-error
-                       :context "while scanning a quoted scalar"
+            :do (error 'scan-error
+                       :scanner scanner
+                       :context "While scanning a quoted scalar"
                        :context-mark start-mark
-                       :problem "found unexpected document indicator"
-                       :problem-mark (copy-mark scanner))
+                       :problem "found unexpected document indicator")
           ;; Check for EOF
           :when (nulp scanner)
-            :do (error 'scanner-error
+            :do (error 'scan-error
+                       :scanner scanner
                        :context "while scanning a quoted scalar"
                        :context-mark start-mark
-                       :problem "found unexpected end of stream"
-                       :problem-mark (copy-mark scanner))
+                       :problem "found unexpected end of stream")
           :do
              ;; Consume non-blank characters
              (ensure-buffer-length scanner 2)
@@ -1025,11 +1029,11 @@ be returned to the parser."
                              (#\U
                               (setf code-length 8))
                              (otherwise
-                              (error 'scanner-error
-                                     :context "while parsing a quoted scalar"
+                              (error 'scan-error
+                                     :scanner scanner
+                                     :context "While parsing a quoted scalar"
                                      :context-mark start-mark
-                                     :problem "found unknown escape character"
-                                     :problem-mark (copy-mark scanner))))
+                                     :problem "found unknown escape character")))
                            (skip scanner 2)
                            ;; Consume an arbitrary escape code
                            (when (plusp code-length)
@@ -1037,22 +1041,22 @@ be returned to the parser."
                                (ensure-buffer-length scanner code-length)
                                (dotimes (k code-length)
                                  (when (not (hexp scanner k))
-                                   (error 'scanner-error
-                                          :context "while parsing a quoted scalar"
+                                   (error 'scan-error
+                                          :scanner scanner
+                                          :context "While parsing a quoted scalar"
                                           :context-mark start-mark
-                                          :problem "did not find expected hexdecimal number"
-                                          :problem-mark (copy-mark scanner)))
+                                          :problem "did not find expected hexdecimal number"))
                                  (setf value
                                        (+ (ash value 4) (hexp scanner k))))
                                ;; Check the value and write the character
                                (when (or (and (>= value #xD800)
                                               (<= value #xDFFF))
                                          (> value #x10FFFF))
-                                 (error 'scanner-error
-                                        :context "while parsing a quoted scalar"
+                                 (error 'scan-error
+                                        :scanner scanner
+                                        :context "While parsing a quoted scalar"
                                         :context-mark start-mark
-                                        :problem "found invalid Unicode character escape code"
-                                        :problem-mark (copy-mark scanner)))
+                                        :problem "found invalid Unicode character escape code"))
                                (vector-push-extend (code-char value) string)
                                (skip scanner code-length)))))
                         (t
@@ -1143,13 +1147,13 @@ be returned to the parser."
               (when (not (and (check scanner #\%)
                               (hexp scanner 1)
                               (hexp scanner 2)))
-                (error 'scanner-error
+                (error 'scan-error
+                       :scanner scanner
                        :context (if directivep
-                                    "while parsing a %TAG directive"
-                                    "while parsing a tag")
+                                    "While parsing a %TAG directive"
+                                    "While parsing a tag")
                        :context-mark start-mark
-                       :problem "did not find URI escaped octet"
-                       :problem-mark (copy-mark scanner)))
+                       :problem "did not find URI escaped octet"))
               ;; Get the octet
               (let ((octet (+ (ash (hexp scanner 1) 4)
                               (hexp scanner 2))))
@@ -1157,23 +1161,23 @@ be returned to the parser."
                   ((zerop width)
                    (setf width (utf8-width octet))
                    (when (zerop width)
-                     (error 'scanner-error
+                     (error 'scan-error
+                            :scanner scanner
                             :context (if directivep
-                                         "while parsing a %TAG directive"
-                                         "while parsing a tag")
+                                         "While parsing a %TAG directive"
+                                         "While parsing a tag")
                             :context-mark start-mark
-                            :problem "found an incorrect leading UTF-8 otect"
-                            :problem-mark (copy-mark scanner)))
+                            :problem "found an incorrect leading UTF-8 otect"))
                    (setf code (utf8-octet octet)))
                   (t
                    (when (/= (logand octet #b11000000) #b10000000)
-                     (error 'scanner-error
+                     (error 'scan-error
+                            :scanner scanner
                             :context (if directivep
-                                         "while parsing a %TAG directive"
-                                         "while parsing a tag")
+                                         "While parsing a %TAG directive"
+                                         "While parsing a tag")
                             :context-mark start-mark
-                            :problem "found an incorrect trailing UTF-8 otect"
-                            :problem-mark (copy-mark scanner)))
+                            :problem "found an incorrect trailing UTF-8 otect"))
                    (setf code (+ (ash code 6) (utf8-octet octet))))))
               (decf width)
           :while (plusp width))
@@ -1211,13 +1215,13 @@ be returned to the parser."
              (ensure-buffer-length scanner 1))
     ;; Check if the tag is non-empty
     (when (zerop length)
-      (error 'scanner-error
+      (error 'scan-error
+             :scanner scanner
              :context (if directivep
-                          "while parsing a %TAG directive"
-                          "while parsing a tag")
+                          "While parsing a %TAG directive"
+                          "While parsing a tag")
              :context-mark start-mark
-             :problem "did not find expected tag URI"
-             :problem-mark (copy-mark scanner)))
+             :problem "did not find expected tag URI"))
     string))
 
 (defun scan-tag-handle (scanner directivep start-mark)
@@ -1227,13 +1231,13 @@ be returned to the parser."
     ;; Check the inital '!' character
     (ensure-buffer-length scanner 1)
     (when (not (check scanner #\!))
-      (error 'scanner-error
+      (error 'scan-error
+             :scanner scanner
              :context (if directivep
-                          "while scanning a tag directive"
-                          "while scanning a tag")
+                          "While scanning a tag directive"
+                          "While scanning a tag")
              :context-mark start-mark
-             :problem "did not find expected '!'"
-             :problem-mark (copy-mark scanner)))
+             :problem "did not find expected '!'"))
     (vector-push-extend (yread scanner) handle)
     ;; Copy all subsequent alphabetical and numerical characters
     (ensure-buffer-length scanner 1)
@@ -1250,11 +1254,11 @@ be returned to the parser."
        ;; must be a part of URI.
        (when (and directivep
                   (not (string= handle "!")))
-         (error 'scanner-error
-                :context "while parsing a tag directive"
+         (error 'scan-error
+                :scanner scanner
+                :context "While parsing a tag directive"
                 :context-mark start-mark
-                :problem "did not find expected '!'"
-                :problem-mark (copy-mark scanner)))))
+                :problem "did not find expected '!'"))))
     handle))
 
 (defun scan-tag (scanner)
@@ -1272,11 +1276,11 @@ be returned to the parser."
        (setf suffix (scan-tag-uri scanner nil nil start-mark))
        ;; Check '>' and eat it
        (when (not (check scanner #\>))
-         (error 'scanner-error
-                :context "while scanning a tag"
+         (error 'scan-error
+                :scanner scanner
+                :context "While scanning a tag"
                 :context-mark start-mark
-                :problem "did not find the expected '>'"
-                :problem-mark (copy-mark scanner)))
+                :problem "did not find the expected '>'"))
        (skip scanner))
       (t
        ;; The tag has either the '!suffix or the '!handle!suffix' form
@@ -1301,11 +1305,11 @@ be returned to the parser."
     ;; Check the character which ends the tag
     (ensure-buffer-length scanner 1)
     (when (not (blank-or-break-or-nul-p scanner))
-      (error 'scanner-error
-             :context "while scanning a tag"
+      (error 'scan-error
+             :scanner scanner
+             :context "While scanning a tag"
              :context-mark start-mark
-             :problem "did not find expected whitespace or line break"
-             :problem-mark (copy-mark scanner)))
+             :problem "did not find expected whitespace or line break"))
     (let ((end-mark (copy-mark scanner)))
       (make-tag handle suffix start-mark end-mark))))
 
@@ -1335,18 +1339,18 @@ Scope:
               (ensure-buffer-length scanner 1))
     ;; Check if the name is empty
     (when (zerop (length name))
-      (error 'scanner-error
-             :context "while scanning a directive"
+      (error 'scan-error
+             :scanner scanner
+             :context "While scanning a directive"
              :context-mark start-mark
-             :problem "could not find expected directive name"
-             :problem-mark (copy-mark scanner)))
+             :problem "could not find expected directive name"))
     ;; Check for an blank character after the name
     (when (not (blank-or-break-or-nul-p scanner))
-      (error 'scanner-error
-             :context "while scanning a directive"
+      (error 'scan-error
+             :scanner scanner
+             :context "While scanning a directive"
              :context-mark start-mark
-             :problem "found unexpected non-alphabetical character"
-             :problem-mark (copy-mark scanner)))
+             :problem "found unexpected non-alphabetical character"))
     name))
 
 (defparameter *max-number-length* 9)
@@ -1366,19 +1370,19 @@ Scope:
     (loop :while (digitp scanner)
           :do (incf length)
               (when (> length *max-number-length*)
-                (error 'scanner-error
-                       :context "while scanning a %YAML directive"
+                (error 'scan-error
+                       :scanner scanner
+                       :context "While scanning a %YAML directive"
                        :context-mark start-mark
-                       :problem "found extremely long version number"
-                       :problem-mark (copy-mark scanner)))
+                       :problem "found extremely long version number"))
               (setf value (+ (* value 10) (digit-char-p (yread scanner) 10)))
               (ensure-buffer-length scanner 1))
     (when (zerop length)
-      (error 'scanner-error
-             :context "while scanning a %YAML directive"
+      (error 'scan-error
+             :scanner scanner
+             :context "While scanning a %YAML directive"
              :context-mark start-mark
-             :problem "did not find expected version number"
-             :problem-mark (copy-mark scanner)))
+             :problem "did not find expected version number"))
     value))
 
 (defun scan-version-directive-value (scanner start-mark)
@@ -1396,11 +1400,11 @@ Scope:
   (let ((major (scan-version-directive-number scanner start-mark)))
     ;; Eat '.'
     (when (not (check scanner #\.))
-      (error 'scanner-error
-             :context "while scanning a %YAML directive"
+      (error 'scan-error
+             :scanner scanner
+             :context "While scanning a %YAML directive"
              :context-mark start-mark
-             :problem "did not find expected digit or '.' character"
-             :problem-mark (copy-mark scanner)))
+             :problem "did not find expected digit or '.' character"))
     (skip scanner)
     ;; Consume the minor version number
     (let ((minor (scan-version-directive-number scanner start-mark)))
@@ -1422,11 +1426,11 @@ Scope:
     ;; Expect a whitespace
     (ensure-buffer-length scanner 1)
     (when (not (blankp scanner))
-      (error 'scanner-error
-             :context "while scanning a %TAG directive"
+      (error 'scan-error
+             :scanner scanner
+             :context "While scanning a %TAG directive"
              :context-mark start-mark
-             :problem "did not find expected whitespace"
-             :problem-mark (copy-mark scanner)))
+             :problem "did not find expected whitespace"))
     ;; Eat whitespaces
     (loop :while (blankp scanner)
           :do (skip scanner)
@@ -1436,11 +1440,11 @@ Scope:
       ;; Expect a whitespace or line break
       (ensure-buffer-length scanner 1)
       (when (not (blank-or-break-or-nul-p scanner))
-        (error 'scanner-error
+        (error 'scan-error
+               :scanner scanner
                :context "while scanning a %TAG directive"
                :context-mark start-mark
-               :problem "did not find expected whitespace or line break"
-               :problem-mark (copy-mark scanner)))
+               :problem "did not find expected whitespace or line break"))
       (values handle prefix))))
 
 (defun scan-directive (scanner)
@@ -1471,11 +1475,11 @@ Scope:
                (make-tag-directive handle prefix
                                    start-mark (copy-mark scanner))))
             (t
-             (error 'scanner-error
-                    :context "while scanning a directive"
+             (error 'scan-error
+                    :scanner scanner
+                    :context "While scanning a directive"
                     :context-mark start-mark
-                    :problem "found unknown directive name"
-                    :problem-mark (copy-mark scanner)))))
+                    :problem "found unknown directive name"))))
       ;; Eat the rest of the line including any comments
       (loop :while (blankp scanner)
             :do (skip scanner)
@@ -1488,11 +1492,11 @@ Scope:
       ;; Check if we are at the end of the line
       (when (not (or (breakp scanner)
                      (nulp scanner)))
-        (error 'scanner-error
-               :context "while scanning a directive"
+        (error 'scan-error
+               :scanner scanner
+               :context "While scanning a directive"
                :context-mark start-mark
-               :problem "did not find expected comment or line break"
-               :problem-mark (copy-mark scanner)))
+               :problem "did not find expected comment or line break"))
       ;; Eat a line break
       (when (breakp scanner)
         (ensure-buffer-length scanner 2)
@@ -1524,7 +1528,8 @@ scalar. Determine the indentation level if needed."
           :when (and (or (zerop indent)
                          (< (current-column scanner) indent))
                      (tabp scanner))
-            :do (error 'scanner-error
+            :do (error 'scan-error
+                       :scanner scanner
                        :context "while scanning a block scalar"
                        :context-mark start-mark
                        :problem "found a tab character where an indentation space is expected")
@@ -1575,22 +1580,22 @@ scalar. Determine the indentation level if needed."
        (when (digitp scanner)
          ;; Check that the indentation is greater than 0
          (when (check scanner #\0)
-           (error 'scanner-error
+           (error 'scan-error
+                  :scanner scanner
                   :context "while scanning a block scalar"
                   :context-mark start-mark
-                  :problem "found an indentation indicator equal to 0"
-                  :problem-mark (copy-mark scanner)))
+                  :problem "found an indentation indicator equal to 0"))
          ;; Get the indentation level and eat the indicator
          (setf increment (digitp scanner))
          (skip scanner)))
       ;; Do the same as above, but in the opposite order
       ((digitp scanner)
        (when (check scanner #\0)
-         (error 'scanner-error
+         (error 'scan-error
+                :scanner scanner
                 :context "while scanning a block scalar"
                 :context-mark start-mark
-                :problem "found an indentation indicator equal to 0"
-                :problem-mark (copy-mark scanner)))
+                :problem "found an indentation indicator equal to 0"))
        (setf increment (digitp scanner))
        (skip scanner)
        (ensure-buffer-length scanner 1)
@@ -1609,11 +1614,11 @@ scalar. Determine the indentation level if needed."
                 (ensure-buffer-length scanner 1)))
     ;; Check if we are at the end of the line
     (when (not (blank-or-break-or-nul-p scanner))
-      (error 'scanner-error
+      (error 'scan-error
+             :scanner scanner
              :context "while scanning a block scalar"
              :context-mark start-mark
-             :problem "did not find expected comment or line break"
-             :problem-mark (copy-mark scanner)))
+             :problem "did not find expected comment or line break"))
     ;; Eat a line break
     (when (breakp scanner)
       (ensure-buffer-length scanner 2)
