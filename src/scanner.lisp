@@ -289,7 +289,6 @@ this case, append or insert the specified token into the token queue."
       (let ((token (make-token type mark mark)))
         (if (= -1 number)
             (enqueue token (tokens scanner))
-            ;; FIXME insert to correct position
             (let ((n (- number (tokens-parsed scanner))))
               (inqueue token n (tokens scanner))))))))
 
@@ -815,7 +814,8 @@ be returned to the parser."
           :until (looking-at scanner "#")
           ;; Consume non-blank characters
           :do (loop :until (blank-or-break-or-nul-p scanner)
-                    ;; Check for 'x:x' in the flow context. TODO: Fix the test "spec-08-13".
+                    ;; Check for 'x:x' in the flow context. TODO: Fix
+                    ;; the test "spec-08-13".
                     :when (and (plusp (flow-level scanner))
                                (looking-at scanner ":")
                                (not (blank-or-break-or-nul-p scanner 1)))
