@@ -410,118 +410,102 @@ be returned to the parser."
 
 (defun fetch-next-token (scanner)
   "The dispatcher for token fetchers."
-  (block nil
-    ;; Ensure that the buffer is initialized
-    (ensure-buffer-length scanner 1)
+  ;; Ensure that the buffer is initialized
+  (ensure-buffer-length scanner 1)
+  (cond
     ;; Check if we just started scanning. Fetch STREAM-START then
-    (when (not (stream-start-produced-p scanner))
-      (return (fetch-stream-start scanner)))
-    ;; Eat whitespaces and comments until we reach the next token
-    (scan-to-next-token scanner)
-    ;; Remove obsolete potential simple keys
-    (stale-simple-keys scanner)
-    ;; Check the indentation level against the current column
-    (unroll-indent scanner (current-column scanner))
-    ;; Ensure that the buffer contains at least 4 characters. 4 is the
-    ;; length of the longest indicators ('--- ' and '... ').
-    (ensure-buffer-length scanner 4)
-    ;; Is it the end of the stream?
-    (when (nulp scanner)
-      (return (fetch-stream-end scanner)))
-    ;; Is it a directive?
-    (when (and (zerop (current-column scanner))
-               (looking-at scanner "%"))
-      (return (fetch-directive scanner)))
-    ;; Is it the document start indicator?
-    (when (and (zerop (current-column scanner))
-               (looking-at scanner "---")
-               (blank-or-break-or-nul-p scanner 3))
-      (return (fetch-document-indicator scanner 'document-start)))
-    ;; Is it the document end indicator?
-    (when (and (zerop (current-column scanner))
-               (looking-at scanner "...")
-               (blank-or-break-or-nul-p scanner 3))
-      (return (fetch-document-indicator scanner 'document-end)))
-    ;; Is it the flow sequence start indicator?
-    (when (looking-at scanner "[")
-      (return (fetch-flow-collection-start scanner 'flow-sequence-start)))
-    ;; Is it the flow mapping start indicator?
-    (when (looking-at scanner "{")
-      (return (fetch-flow-collection-start scanner 'flow-mapping-start)))
-    ;; Is it the flow sequence end indicator?
-    (when (looking-at scanner "]")
-      (return (fetch-flow-collection-end scanner 'flow-sequence-end)))
-    ;; Is it the flow mapping end indicator?
-    (when (looking-at scanner "}")
-      (return (fetch-flow-collection-end scanner 'flow-mapping-end)))
-    ;; Is it the flow entry indicator?
-    (when (looking-at scanner ",")
-      (return (fetch-flow-entry scanner)))
-    ;; Is it the block entry indicator?
-    (when (and (looking-at scanner "-")
-               (blank-or-break-or-nul-p scanner 1))
-      (return (fetch-block-entry scanner)))
-    ;; Is it the key indicator?
-    (when (and (looking-at scanner "?")
-               (blank-or-break-or-nul-p scanner 1))
-      (return (fetch-key scanner)))
-    ;; Is it the value indicator?
-    (when (and (looking-at scanner ":")
-               (blank-or-break-or-nul-p scanner 1))
-      (return (fetch-value scanner)))
-    ;; Is it an alias?
-    (when (looking-at scanner "*")
-      (return (fetch-anchor scanner 'alias)))
-    ;; Is it an anchor?
-    (when (looking-at scanner "&")
-      (return (fetch-anchor scanner 'anchor)))
-    ;; Is it a tag?
-    (when (looking-at scanner "!")
-      (return (fetch-tag scanner)))
-    ;; Is it a literal scalar?
-    (when (and (looking-at scanner "|")
-               (zerop (flow-level scanner)))
-      (return (fetch-block-scalar scanner :literal)))
-    ;; Is it a folded scalar
-    (when (and (looking-at scanner ">")
-               (zerop (flow-level scanner)))
-      (return (fetch-block-scalar scanner :folded)))
-    ;; Is it a single-quoted scalar?
-    (when (looking-at scanner "'")
-      (return (fetch-flow-scalar scanner :single-quoted)))
-    ;; Is it a double-quoted scalar?
-    (when (looking-at scanner "\"")
-      (return (fetch-flow-scalar scanner :double-quoted)))
-    ;; Is it a plain scalar?
-    ;;
-    ;; A plain scalar may start with any non-blank characters except
-    ;;
-    ;;     '-', '?', ':', ',', '[', ']', '{', '}',
-    ;;     '#', '&', '*', '!', '|', '>', '\'', '"',
-    ;;     '%', '@', '`'.
-    ;; In the block context (and, for the '-' indicator, in the flow context
-    ;; too), it may also start with the characters
-    ;;
-    ;;     '-', '?', ':'
-    ;; if it is followed by a non-space character.
-    ;;
-    ;; XXX The last rule is more restrictive than the specification requires.
-    (when (or (not (or (blank-or-break-or-nul-p scanner)
-                       (member (peek scanner 0)
-                               '(#\- #\? #\: #\, #\[ #\] #\{ #\} #\# #\& #\*
-                                 #\! #\| #\> #\' #\\ #\% #\@ #\`))))
-              (and (looking-at scanner "-")
-                   (not (blankp scanner 1)))
-              (and (zerop (flow-level scanner))
-                   (or (looking-at scanner "?")
-                       (looking-at scanner ":"))
-                   (not (blank-or-break-or-nul-p scanner 1))))
-      (return (fetch-plain-scalar scanner)))
-    ;; If we don't determine the token type so far, it is an error
-    (error 'scan-error
-           :scanner scanner
-           :context "While scanning for the next token"
-           :problem "found character that cannot start any token")))
+    ((not (stream-start-produced-p scanner))
+     (fetch-stream-start scanner))
+    (t
+     ;; Eat whitespaces and comments until we reach the next token
+     (scan-to-next-token scanner)
+     ;; Remove obsolete potential simple keys
+     (stale-simple-keys scanner)
+     ;; Check the indentation level against the current column
+     (unroll-indent scanner (current-column scanner))
+     ;; Ensure that the buffer contains at least 4 characters. 4 is the
+     ;; length of the longest indicators ('--- ' and '... ').
+     (ensure-buffer-length scanner 4)
+     (cond
+       ((nulp scanner)
+        (fetch-stream-end scanner))
+       ((and (zerop (current-column scanner))
+             (looking-at scanner "%"))
+        (fetch-directive scanner))
+       ((and (zerop (current-column scanner))
+             (looking-at scanner "---")
+             (blank-or-break-or-nul-p scanner 3))
+        (fetch-document-indicator scanner 'document-start))
+       ((and (zerop (current-column scanner))
+             (looking-at scanner "...")
+             (blank-or-break-or-nul-p scanner 3))
+        (fetch-document-indicator scanner 'document-end))
+       ((looking-at scanner "[")
+        (fetch-flow-collection-start scanner 'flow-sequence-start))
+       ((looking-at scanner "{")
+        (fetch-flow-collection-start scanner 'flow-mapping-start))
+       ((looking-at scanner "]")
+        (fetch-flow-collection-end scanner 'flow-sequence-end))
+       ((looking-at scanner "}")
+        (fetch-flow-collection-end scanner 'flow-mapping-end))
+       ((looking-at scanner ",")
+        (fetch-flow-entry scanner))
+       ((and (looking-at scanner "-")
+             (blank-or-break-or-nul-p scanner 1))
+        (fetch-block-entry scanner))
+       ((and (looking-at scanner "?")
+             (blank-or-break-or-nul-p scanner 1))
+        (fetch-key scanner))
+       ((and (looking-at scanner ":")
+             (blank-or-break-or-nul-p scanner 1))
+        (fetch-value scanner))
+       ((looking-at scanner "*")
+        (fetch-anchor scanner 'alias))
+       ((looking-at scanner "&")
+        (fetch-anchor scanner 'anchor))
+       ((looking-at scanner "!")
+        (fetch-tag scanner))
+       ((and (looking-at scanner "|")
+             (zerop (flow-level scanner)))
+        (fetch-block-scalar scanner :literal))
+       ((and (looking-at scanner ">")
+             (zerop (flow-level scanner)))
+        (fetch-block-scalar scanner :folded))
+       ((looking-at scanner "'")
+        (fetch-flow-scalar scanner :single-quoted))
+       ((looking-at scanner "\"")
+        (fetch-flow-scalar scanner :double-quoted))
+       ;; Is it a plain scalar?
+       ;;
+       ;; A plain scalar may start with any non-blank characters except
+       ;;
+       ;;     '-', '?', ':', ',', '[', ']', '{', '}',
+       ;;     '#', '&', '*', '!', '|', '>', '\'', '"',
+       ;;     '%', '@', '`'.
+       ;; In the block context (and, for the '-' indicator, in the flow context
+       ;; too), it may also start with the characters
+       ;;
+       ;;     '-', '?', ':'
+       ;; if it is followed by a non-space character.
+       ;;
+       ;; XXX The last rule is more restrictive than the specification requires.
+       ((or (not (or (blank-or-break-or-nul-p scanner)
+                     (member (peek scanner 0)
+                             '(#\- #\? #\: #\, #\[ #\] #\{ #\} #\# #\& #\*
+                               #\! #\| #\> #\' #\\ #\% #\@ #\`))))
+            (and (looking-at scanner "-")
+                 (not (blankp scanner 1)))
+            (and (zerop (flow-level scanner))
+                 (or (looking-at scanner "?")
+                     (looking-at scanner ":"))
+                 (not (blank-or-break-or-nul-p scanner 1))))
+        (fetch-plain-scalar scanner))
+       ;; If we don't determine the token type so far, it is an error
+       (t
+        (error 'scan-error
+               :scanner scanner
+               :context "While scanning for the next token"
+               :problem "found character that cannot start any token"))))))
 
 (defun scan-to-next-token (scanner)
   (loop :do (ensure-buffer-length scanner 1)
